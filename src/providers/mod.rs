@@ -63,13 +63,12 @@ impl ProviderRegistry {
     }
 
     pub async fn fetch_provider(&self, provider: Provider) -> Result<UsageSnapshot> {
-        for p in &self.providers {
-            if p.identifier() == provider {
-                return p.fetch_usage().await;
-            }
-        }
-
-        anyhow::bail!("Provider {:?} not enabled", provider)
+        self.providers
+            .iter()
+            .find(|p| p.identifier() == provider)
+            .ok_or_else(|| anyhow::anyhow!("Provider {:?} not enabled", provider))?
+            .fetch_usage()
+            .await
     }
 
     #[allow(dead_code)]

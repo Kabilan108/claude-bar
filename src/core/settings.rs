@@ -182,11 +182,7 @@ impl SettingsWatcher {
 
                         tracing::info!(?config_path_clone, "Config reloaded");
 
-                        {
-                            let mut current = settings_clone.write().await;
-                            *current = new_settings.clone();
-                        }
-
+                        *settings_clone.write().await = new_settings.clone();
                         let _ = update_tx_clone.send(new_settings);
                     }
                     Err(e) => {

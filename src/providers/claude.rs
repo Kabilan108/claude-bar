@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use tracing::{debug, warn};
 
-const CREDENTIALS_PATH: &str = ".claude/.credentials.json";
+const DEFAULT_CREDENTIALS_PATH: &str = ".claude/.credentials.json";
 const API_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 
 #[derive(Debug, Deserialize)]
@@ -54,8 +54,8 @@ pub struct ClaudeProvider {
 impl ClaudeProvider {
     pub fn new() -> Self {
         let credentials_path = dirs::home_dir()
-            .map(|p| p.join(CREDENTIALS_PATH))
-            .unwrap_or_else(|| PathBuf::from(CREDENTIALS_PATH));
+            .map(|p| p.join(DEFAULT_CREDENTIALS_PATH))
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_CREDENTIALS_PATH));
 
         Self { credentials_path }
     }
@@ -181,22 +181,9 @@ impl UsageProvider for ClaudeProvider {
         let secondary =
             Self::window_to_rate_window(usage.seven_day.as_ref(), 10080, "Weekly quota");
 
-        let opus = usage
-            .seven_day_opus
-            .as_ref()
-            .map(|w| RateWindow {
-                used_percent: w.utilization / 100.0,
-                window_minutes: Some(10080),
-                resets_at: Self::parse_reset_time(w.resets_at.as_deref()),
-                reset_description: Some("Opus weekly".to_string()),
-            })
+        let opus = Self::window_to_rate_window(usage.seven_day_opus.as_ref(), 10080, "Opus weekly")
             .or_else(|| {
-                usage.seven_day_sonnet.as_ref().map(|w| RateWindow {
-                    used_percent: w.utilization / 100.0,
-                    window_minutes: Some(10080),
-                    resets_at: Self::parse_reset_time(w.resets_at.as_deref()),
-                    reset_description: Some("Sonnet weekly".to_string()),
-                })
+                Self::window_to_rate_window(usage.seven_day_sonnet.as_ref(), 10080, "Sonnet weekly")
             });
 
         let plan = Self::infer_plan_from_tier(credentials.rate_limit_tier.as_deref());

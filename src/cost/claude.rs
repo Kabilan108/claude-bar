@@ -1,10 +1,10 @@
 use crate::core::models::DailyCost;
-use crate::cost::pricing::{PricingStore, TokenUsage};
-use crate::cost::scanner::CostScanner;
+use crate::cost::pricing::PricingStore;
+use crate::cost::scanner::{aggregate_entries, CostScanner, LogEntry};
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -181,57 +181,20 @@ impl CostScanner for ClaudeCostScanner {
         let files = self.find_jsonl_files(since, until);
         tracing::debug!(count = files.len(), "Found JSONL files");
 
-        let mut aggregated: HashMap<(NaiveDate, String), TokenUsage> = HashMap::new();
-
-        for file in files {
-            match self.parse_file(&file, since, until) {
-                Ok(entries) => {
-                    for entry in entries {
-                        let key = (entry.date, entry.model.clone());
-                        let usage = aggregated.entry(key).or_default();
-                        usage.input_tokens += entry.input_tokens;
-                        usage.output_tokens += entry.output_tokens;
-                        usage.cache_creation_tokens += entry.cache_creation_tokens;
-                        usage.cache_read_tokens += entry.cache_read_tokens;
-                    }
-                }
+        let entries: Vec<LogEntry> = files
+            .iter()
+            .filter_map(|file| match self.parse_file(file, since, until) {
+                Ok(entries) => Some(entries),
                 Err(e) => {
                     tracing::debug!(?file, error = %e, "Failed to parse file");
+                    None
                 }
-            }
-        }
-
-        let mut costs: Vec<DailyCost> = aggregated
-            .into_iter()
-            .map(|((date, model), usage)| {
-                let cost = self
-                    .pricing
-                    .get_price(&model)
-                    .map(|p| p.calculate_cost(&usage))
-                    .unwrap_or_else(|| {
-                        tracing::debug!(model = %model, "No pricing found, estimating");
-                        let fallback_price = 3.0 / 1_000_000.0;
-                        (usage.input_tokens + usage.output_tokens) as f64 * fallback_price
-                    });
-
-                DailyCost { date, model, cost }
             })
+            .flatten()
             .collect();
 
-        costs.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.model.cmp(&b.model)));
-
-        Ok(costs)
+        Ok(aggregate_entries(entries, &self.pricing))
     }
-}
-
-#[derive(Debug)]
-struct LogEntry {
-    date: NaiveDate,
-    model: String,
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_creation_tokens: u64,
-    cache_read_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]

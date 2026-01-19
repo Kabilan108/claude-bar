@@ -1,4 +1,4 @@
-use crate::core::models::{RateWindow, UsageSnapshot};
+use crate::core::models::{ProviderIdentity, RateWindow, UsageSnapshot};
 use crate::core::settings::Settings;
 use crate::providers::{ClaudeProvider, CodexProvider, UsageProvider};
 use anyhow::Result;
@@ -22,7 +22,7 @@ struct ProviderStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     opus: Option<WindowStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    identity: Option<IdentityInfo>,
+    identity: Option<ProviderIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -37,20 +37,10 @@ struct WindowStatus {
     window_minutes: Option<i32>,
 }
 
-#[derive(Serialize)]
-struct IdentityInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    organization: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plan: Option<String>,
-}
-
 pub async fn run(json: bool, provider_filter: Option<String>) -> Result<()> {
     let settings = Settings::load()?;
 
-    let providers: Vec<Box<dyn UsageProvider>> = build_provider_list(&settings, &provider_filter);
+    let providers = build_provider_list(&settings, provider_filter.as_deref());
 
     if providers.is_empty() {
         if let Some(filter) = &provider_filter {
@@ -83,21 +73,18 @@ pub async fn run(json: bool, provider_filter: Option<String>) -> Result<()> {
 
 fn build_provider_list(
     settings: &Settings,
-    provider_filter: &Option<String>,
+    provider_filter: Option<&str>,
 ) -> Vec<Box<dyn UsageProvider>> {
+    let filter = provider_filter.map(|s| s.to_lowercase());
+    let matches_filter = |name: &str| filter.is_none() || filter.as_deref() == Some(name);
+
     let mut providers: Vec<Box<dyn UsageProvider>> = Vec::new();
 
-    let filter = provider_filter.as_ref().map(|s| s.to_lowercase());
-
-    if settings.providers.claude.enabled
-        && (filter.is_none() || filter.as_deref() == Some("claude"))
-    {
+    if settings.providers.claude.enabled && matches_filter("claude") {
         providers.push(Box::new(ClaudeProvider::new()));
     }
 
-    if settings.providers.codex.enabled
-        && (filter.is_none() || filter.as_deref() == Some("codex"))
-    {
+    if settings.providers.codex.enabled && matches_filter("codex") {
         providers.push(Box::new(CodexProvider::new()));
     }
 
@@ -132,11 +119,7 @@ fn snapshot_to_status(snapshot: UsageSnapshot) -> ProviderStatus {
         session: snapshot.primary.map(|w| window_to_status(&w)),
         weekly: snapshot.secondary.map(|w| window_to_status(&w)),
         opus: snapshot.opus.map(|w| window_to_status(&w)),
-        identity: Some(IdentityInfo {
-            email: snapshot.identity.email,
-            organization: snapshot.identity.organization,
-            plan: snapshot.identity.plan,
-        }),
+        identity: Some(snapshot.identity),
         error: None,
     }
 }
@@ -173,12 +156,10 @@ fn format_reset_time(resets_at: DateTime<Utc>) -> String {
 }
 
 fn print_text_output(results: &HashMap<String, ProviderStatus>) {
-    let mut first = true;
-    for (name, status) in results {
-        if !first {
+    for (i, (name, status)) in results.iter().enumerate() {
+        if i > 0 {
             println!();
         }
-        first = false;
 
         println!("{}", name);
 

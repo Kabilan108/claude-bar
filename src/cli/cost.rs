@@ -40,7 +40,7 @@ pub async fn run(json: bool, days: u32) -> Result<()> {
         let output = build_json_output(costs, days);
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        print_text_output(&costs, days);
+        print_text_output(&costs);
     }
 
     Ok(())
@@ -76,18 +76,16 @@ fn build_json_output(costs: HashMap<Provider, CostSnapshot>, days: u32) -> CostO
     }
 }
 
-fn print_text_output(costs: &HashMap<Provider, CostSnapshot>, _days: u32) {
+fn print_text_output(costs: &HashMap<Provider, CostSnapshot>) {
     if costs.is_empty() {
         println!("No cost data found.");
         return;
     }
 
-    let mut first = true;
-    for (provider, snapshot) in costs {
-        if !first {
+    for (i, (provider, snapshot)) in costs.iter().enumerate() {
+        if i > 0 {
             println!();
         }
-        first = false;
 
         println!("{}", provider.name());
         println!("  Today:      ${:.2}", snapshot.today_cost);

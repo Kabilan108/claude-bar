@@ -87,11 +87,12 @@ impl UsageStore {
     }
 
     pub async fn should_refresh(&self, provider: Provider, cooldown: Duration) -> bool {
-        let inner = self.inner.read().await;
-        match inner.last_fetch.get(&provider) {
-            Some(last) => last.elapsed() >= cooldown,
-            None => true,
-        }
+        self.inner
+            .read()
+            .await
+            .last_fetch
+            .get(&provider)
+            .map_or(true, |last| last.elapsed() >= cooldown)
     }
 
     #[allow(dead_code)]

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelPricing {
     pub input_price_per_million: f64,
     pub output_price_per_million: f64,
@@ -25,6 +25,35 @@ pub struct ModelPricing {
 }
 
 impl ModelPricing {
+    fn new(input: f64, output: f64) -> Self {
+        Self {
+            input_price_per_million: input,
+            output_price_per_million: output,
+            ..Default::default()
+        }
+    }
+
+    fn with_cache(mut self, creation: f64, read: f64) -> Self {
+        self.cache_creation_price_per_million = Some(creation);
+        self.cache_read_price_per_million = Some(read);
+        self
+    }
+
+    fn with_tiered_pricing(mut self, threshold: u64, input_above: f64, output_above: f64) -> Self {
+        self.threshold_tokens = Some(threshold);
+        self.input_price_above_threshold = Some(input_above);
+        self.output_price_above_threshold = Some(output_above);
+        self
+    }
+
+    fn with_tiered_cache(mut self, creation_above: f64, read_above: f64) -> Self {
+        self.cache_creation_price_above_threshold = Some(creation_above);
+        self.cache_read_price_above_threshold = Some(read_above);
+        self
+    }
+}
+
+impl ModelPricing {
     fn tiered_cost(&self, tokens: u64, base_price: f64, above_price: Option<f64>) -> f64 {
         let price_per_token = base_price / 1_000_000.0;
 
@@ -38,38 +67,38 @@ impl ModelPricing {
         }
     }
 
+    fn optional_tiered_cost(
+        &self,
+        tokens: u64,
+        price: Option<f64>,
+        above_price: Option<f64>,
+    ) -> f64 {
+        price.map_or(0.0, |p| self.tiered_cost(tokens, p, above_price))
+    }
+
     pub fn calculate_cost(&self, usage: &TokenUsage) -> f64 {
-        let input_cost = self.tiered_cost(
+        let input = self.tiered_cost(
             usage.input_tokens,
             self.input_price_per_million,
             self.input_price_above_threshold,
         );
-
-        let output_cost = self.tiered_cost(
+        let output = self.tiered_cost(
             usage.output_tokens,
             self.output_price_per_million,
             self.output_price_above_threshold,
         );
+        let cache_creation = self.optional_tiered_cost(
+            usage.cache_creation_tokens,
+            self.cache_creation_price_per_million,
+            self.cache_creation_price_above_threshold,
+        );
+        let cache_read = self.optional_tiered_cost(
+            usage.cache_read_tokens,
+            self.cache_read_price_per_million,
+            self.cache_read_price_above_threshold,
+        );
 
-        let cache_creation_cost = match self.cache_creation_price_per_million {
-            Some(price) => self.tiered_cost(
-                usage.cache_creation_tokens,
-                price,
-                self.cache_creation_price_above_threshold,
-            ),
-            None => 0.0,
-        };
-
-        let cache_read_cost = match self.cache_read_price_per_million {
-            Some(price) => self.tiered_cost(
-                usage.cache_read_tokens,
-                price,
-                self.cache_read_price_above_threshold,
-            ),
-            None => 0.0,
-        };
-
-        input_cost + output_cost + cache_creation_cost + cache_read_cost
+        input + output + cache_creation + cache_read
     }
 }
 
@@ -118,201 +147,89 @@ impl PricingStore {
     }
 
     fn embedded_defaults() -> HashMap<String, ModelPricing> {
-        let mut prices = HashMap::new();
-
-        // Claude Opus 4.5 (latest)
-        prices.insert(
-            "claude-opus-4-5-20251101".to_string(),
-            ModelPricing {
-                input_price_per_million: 5.0,
-                output_price_per_million: 25.0,
-                cache_creation_price_per_million: Some(6.25),
-                cache_read_price_per_million: Some(0.5),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // Claude Sonnet 4 (with tiered pricing above 200k tokens)
-        prices.insert(
-            "claude-sonnet-4-20250514".to_string(),
-            ModelPricing {
-                input_price_per_million: 3.0,
-                output_price_per_million: 15.0,
-                cache_creation_price_per_million: Some(3.75),
-                cache_read_price_per_million: Some(0.3),
-                threshold_tokens: Some(200_000),
-                input_price_above_threshold: Some(6.0),
-                output_price_above_threshold: Some(22.5),
-                cache_creation_price_above_threshold: Some(7.5),
-                cache_read_price_above_threshold: Some(0.6),
-            },
-        );
-
-        // Claude 3.5 Sonnet
-        prices.insert(
-            "claude-3-5-sonnet-20241022".to_string(),
-            ModelPricing {
-                input_price_per_million: 3.0,
-                output_price_per_million: 15.0,
-                cache_creation_price_per_million: Some(3.75),
-                cache_read_price_per_million: Some(0.3),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // Claude 3.5 Haiku
-        prices.insert(
-            "claude-3-5-haiku-20241022".to_string(),
-            ModelPricing {
-                input_price_per_million: 0.80,
-                output_price_per_million: 4.0,
-                cache_creation_price_per_million: Some(1.0),
-                cache_read_price_per_million: Some(0.08),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // Claude 3 Opus
-        prices.insert(
-            "claude-3-opus-20240229".to_string(),
-            ModelPricing {
-                input_price_per_million: 15.0,
-                output_price_per_million: 75.0,
-                cache_creation_price_per_million: Some(18.75),
-                cache_read_price_per_million: Some(1.5),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // Claude Opus 4
-        prices.insert(
-            "claude-opus-4-20250514".to_string(),
-            ModelPricing {
-                input_price_per_million: 15.0,
-                output_price_per_million: 75.0,
-                cache_creation_price_per_million: Some(18.75),
-                cache_read_price_per_million: Some(1.5),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // GPT-5 (Codex)
-        prices.insert(
-            "gpt-5".to_string(),
-            ModelPricing {
-                input_price_per_million: 1.25,
-                output_price_per_million: 10.0,
-                cache_creation_price_per_million: None,
-                cache_read_price_per_million: Some(0.125),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // GPT-4o
-        prices.insert(
-            "gpt-4o".to_string(),
-            ModelPricing {
-                input_price_per_million: 2.50,
-                output_price_per_million: 10.0,
-                cache_creation_price_per_million: None,
-                cache_read_price_per_million: Some(1.25),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // GPT-4o-mini
-        prices.insert(
-            "gpt-4o-mini".to_string(),
-            ModelPricing {
-                input_price_per_million: 0.15,
-                output_price_per_million: 0.60,
-                cache_creation_price_per_million: None,
-                cache_read_price_per_million: Some(0.075),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // o1
-        prices.insert(
-            "o1".to_string(),
-            ModelPricing {
-                input_price_per_million: 15.0,
-                output_price_per_million: 60.0,
-                cache_creation_price_per_million: None,
-                cache_read_price_per_million: Some(7.5),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // o3
-        prices.insert(
-            "o3".to_string(),
-            ModelPricing {
-                input_price_per_million: 10.0,
-                output_price_per_million: 40.0,
-                cache_creation_price_per_million: None,
-                cache_read_price_per_million: Some(2.5),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        // o3-mini
-        prices.insert(
-            "o3-mini".to_string(),
-            ModelPricing {
-                input_price_per_million: 1.10,
-                output_price_per_million: 4.40,
-                cache_creation_price_per_million: None,
-                cache_read_price_per_million: Some(0.55),
-                threshold_tokens: None,
-                input_price_above_threshold: None,
-                output_price_above_threshold: None,
-                cache_creation_price_above_threshold: None,
-                cache_read_price_above_threshold: None,
-            },
-        );
-
-        prices
+        HashMap::from([
+            // Claude Opus 4.5 (latest)
+            (
+                "claude-opus-4-5-20251101".to_string(),
+                ModelPricing::new(5.0, 25.0).with_cache(6.25, 0.5),
+            ),
+            // Claude Sonnet 4 (with tiered pricing above 200k tokens)
+            (
+                "claude-sonnet-4-20250514".to_string(),
+                ModelPricing::new(3.0, 15.0)
+                    .with_cache(3.75, 0.3)
+                    .with_tiered_pricing(200_000, 6.0, 22.5)
+                    .with_tiered_cache(7.5, 0.6),
+            ),
+            // Claude 3.5 Sonnet
+            (
+                "claude-3-5-sonnet-20241022".to_string(),
+                ModelPricing::new(3.0, 15.0).with_cache(3.75, 0.3),
+            ),
+            // Claude 3.5 Haiku
+            (
+                "claude-3-5-haiku-20241022".to_string(),
+                ModelPricing::new(0.80, 4.0).with_cache(1.0, 0.08),
+            ),
+            // Claude 3 Opus
+            (
+                "claude-3-opus-20240229".to_string(),
+                ModelPricing::new(15.0, 75.0).with_cache(18.75, 1.5),
+            ),
+            // Claude Opus 4
+            (
+                "claude-opus-4-20250514".to_string(),
+                ModelPricing::new(15.0, 75.0).with_cache(18.75, 1.5),
+            ),
+            // GPT-5 (Codex)
+            (
+                "gpt-5".to_string(),
+                ModelPricing {
+                    cache_read_price_per_million: Some(0.125),
+                    ..ModelPricing::new(1.25, 10.0)
+                },
+            ),
+            // GPT-4o
+            (
+                "gpt-4o".to_string(),
+                ModelPricing {
+                    cache_read_price_per_million: Some(1.25),
+                    ..ModelPricing::new(2.50, 10.0)
+                },
+            ),
+            // GPT-4o-mini
+            (
+                "gpt-4o-mini".to_string(),
+                ModelPricing {
+                    cache_read_price_per_million: Some(0.075),
+                    ..ModelPricing::new(0.15, 0.60)
+                },
+            ),
+            // o1
+            (
+                "o1".to_string(),
+                ModelPricing {
+                    cache_read_price_per_million: Some(7.5),
+                    ..ModelPricing::new(15.0, 60.0)
+                },
+            ),
+            // o3
+            (
+                "o3".to_string(),
+                ModelPricing {
+                    cache_read_price_per_million: Some(2.5),
+                    ..ModelPricing::new(10.0, 40.0)
+                },
+            ),
+            // o3-mini
+            (
+                "o3-mini".to_string(),
+                ModelPricing {
+                    cache_read_price_per_million: Some(0.55),
+                    ..ModelPricing::new(1.10, 4.40)
+                },
+            ),
+        ])
     }
 
     pub fn normalize_model_name(model: &str) -> String {
@@ -474,20 +391,14 @@ struct ModelsDevPricing {
 impl ModelsDevModel {
     fn to_pricing(&self) -> Option<ModelPricing> {
         let pricing = self.pricing.as_ref()?;
-        let input = pricing.input?;
-        let output = pricing.output?;
+        let input = pricing.input? * 1_000_000.0;
+        let output = pricing.output? * 1_000_000.0;
 
-        Some(ModelPricing {
-            input_price_per_million: input * 1_000_000.0,
-            output_price_per_million: output * 1_000_000.0,
-            cache_creation_price_per_million: pricing.cache_write.map(|p| p * 1_000_000.0),
-            cache_read_price_per_million: pricing.cache_read.map(|p| p * 1_000_000.0),
-            threshold_tokens: None,
-            input_price_above_threshold: None,
-            output_price_above_threshold: None,
-            cache_creation_price_above_threshold: None,
-            cache_read_price_above_threshold: None,
-        })
+        let mut model_pricing = ModelPricing::new(input, output);
+        if let (Some(write), Some(read)) = (pricing.cache_write, pricing.cache_read) {
+            model_pricing = model_pricing.with_cache(write * 1_000_000.0, read * 1_000_000.0);
+        }
+        Some(model_pricing)
     }
 }
 
@@ -497,18 +408,7 @@ mod tests {
 
     #[test]
     fn test_basic_cost_calculation() {
-        let pricing = ModelPricing {
-            input_price_per_million: 3.0,
-            output_price_per_million: 15.0,
-            cache_creation_price_per_million: None,
-            cache_read_price_per_million: None,
-            threshold_tokens: None,
-            input_price_above_threshold: None,
-            output_price_above_threshold: None,
-            cache_creation_price_above_threshold: None,
-            cache_read_price_above_threshold: None,
-        };
-
+        let pricing = ModelPricing::new(3.0, 15.0);
         let usage = TokenUsage::new(1_000_000, 100_000);
         let cost = pricing.calculate_cost(&usage);
         assert!((cost - 4.5).abs() < 0.001);
@@ -516,48 +416,17 @@ mod tests {
 
     #[test]
     fn test_cost_with_cache() {
-        let pricing = ModelPricing {
-            input_price_per_million: 3.0,
-            output_price_per_million: 15.0,
-            cache_creation_price_per_million: Some(3.75),
-            cache_read_price_per_million: Some(0.3),
-            threshold_tokens: None,
-            input_price_above_threshold: None,
-            output_price_above_threshold: None,
-            cache_creation_price_above_threshold: None,
-            cache_read_price_above_threshold: None,
-        };
-
+        let pricing = ModelPricing::new(3.0, 15.0).with_cache(3.75, 0.3);
         let usage = TokenUsage::new(1_000_000, 100_000).with_cache(50_000, 200_000);
         let cost = pricing.calculate_cost(&usage);
-
-        // input: 1M * 3/1M = $3.00
-        // output: 100k * 15/1M = $1.50
-        // cache_creation: 50k * 3.75/1M = $0.1875
-        // cache_read: 200k * 0.3/1M = $0.06
-        // total: $4.7475
         assert!((cost - 4.7475).abs() < 0.001);
     }
 
     #[test]
     fn test_tiered_pricing() {
-        let pricing = ModelPricing {
-            input_price_per_million: 3.0,
-            output_price_per_million: 15.0,
-            cache_creation_price_per_million: None,
-            cache_read_price_per_million: None,
-            threshold_tokens: Some(200_000),
-            input_price_above_threshold: Some(6.0),
-            output_price_above_threshold: Some(22.5),
-            cache_creation_price_above_threshold: None,
-            cache_read_price_above_threshold: None,
-        };
-
-        // 300k tokens: 200k at base rate, 100k at above rate
+        let pricing = ModelPricing::new(3.0, 15.0).with_tiered_pricing(200_000, 6.0, 22.5);
         let usage = TokenUsage::new(300_000, 0);
         let cost = pricing.calculate_cost(&usage);
-
-        // 200k * 3/1M + 100k * 6/1M = 0.6 + 0.6 = $1.2
         assert!((cost - 1.2).abs() < 0.001);
     }
 

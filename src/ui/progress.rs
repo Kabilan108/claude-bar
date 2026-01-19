@@ -39,6 +39,21 @@ impl Default for UsageProgressBar {
     }
 }
 
+fn draw_rounded_bar(
+    snapshot: &gtk4::Snapshot,
+    width: f32,
+    height: f32,
+    radius: f32,
+    color: gtk4::gdk::RGBA,
+) {
+    let rect = gtk4::graphene::Rect::new(0.0, 0.0, width, height);
+    let corner = gtk4::graphene::Size::new(radius, radius);
+    let rounded = gtk4::gsk::RoundedRect::new(rect, corner, corner, corner, corner);
+    snapshot.push_rounded_clip(&rounded);
+    snapshot.append_color(&color, &rect);
+    snapshot.pop();
+}
+
 mod imp {
     use super::*;
     use std::cell::RefCell;
@@ -76,36 +91,25 @@ mod imp {
             }
 
             let progress = self.progress.get();
-            let border_radius = height / 2.0;
+            let radius = (height / 2.0) as f32;
 
-            let bg_color = gtk4::gdk::RGBA::new(0.2, 0.2, 0.2, 0.3);
-            let bg_rect = gtk4::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
-            let bg_rounded = gtk4::gsk::RoundedRect::new(
-                bg_rect,
-                gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
-                gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
-                gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
-                gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
+            draw_rounded_bar(
+                snapshot,
+                width as f32,
+                height as f32,
+                radius,
+                gtk4::gdk::RGBA::new(0.2, 0.2, 0.2, 0.3),
             );
-            snapshot.push_rounded_clip(&bg_rounded);
-            snapshot.append_color(&bg_color, &bg_rect);
-            snapshot.pop();
 
             if progress > 0.0 {
-                let fill_width = (width * progress).max(height);
-                let fill_color = gtk4::gdk::RGBA::new(0.96, 0.65, 0.14, 1.0);
-                let fill_rect =
-                    gtk4::graphene::Rect::new(0.0, 0.0, fill_width as f32, height as f32);
-                let fill_rounded = gtk4::gsk::RoundedRect::new(
-                    fill_rect,
-                    gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
-                    gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
-                    gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
-                    gtk4::graphene::Size::new(border_radius as f32, border_radius as f32),
+                let fill_width = (width * progress).max(height) as f32;
+                draw_rounded_bar(
+                    snapshot,
+                    fill_width,
+                    height as f32,
+                    radius,
+                    gtk4::gdk::RGBA::new(0.96, 0.65, 0.14, 1.0),
                 );
-                snapshot.push_rounded_clip(&fill_rounded);
-                snapshot.append_color(&fill_color, &fill_rect);
-                snapshot.pop();
             }
         }
 

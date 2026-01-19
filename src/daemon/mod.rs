@@ -1,6 +1,5 @@
 mod app;
 pub mod dbus;
-mod polling;
 pub mod tray;
 
 use anyhow::Result;

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use zbus::interface;
@@ -8,22 +9,21 @@ pub enum DbusCommand {
 }
 
 pub struct ClaudeBarService {
-    is_refreshing: Arc<std::sync::atomic::AtomicBool>,
+    is_refreshing: Arc<AtomicBool>,
     command_tx: mpsc::UnboundedSender<DbusCommand>,
 }
 
 impl ClaudeBarService {
-    pub fn new(command_tx: mpsc::UnboundedSender<DbusCommand>) -> Self {
+    fn new(command_tx: mpsc::UnboundedSender<DbusCommand>) -> Self {
         Self {
-            is_refreshing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            is_refreshing: Arc::new(AtomicBool::new(false)),
             command_tx,
         }
     }
 
     #[allow(dead_code)]
     pub fn set_refreshing(&self, refreshing: bool) {
-        self.is_refreshing
-            .store(refreshing, std::sync::atomic::Ordering::SeqCst);
+        self.is_refreshing.store(refreshing, Ordering::SeqCst);
     }
 }
 
@@ -39,8 +39,7 @@ impl ClaudeBarService {
 
     #[zbus(property)]
     fn is_refreshing(&self) -> bool {
-        self.is_refreshing
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.is_refreshing.load(Ordering::SeqCst)
     }
 
     #[zbus(signal)]

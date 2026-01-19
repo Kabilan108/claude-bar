@@ -1,8 +1,8 @@
 use crate::core::models::Provider;
 use crate::core::settings::Settings;
-use crate::core::store::UsageStore;
 use crate::icons::{IconRenderer, IconState};
 use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
@@ -151,6 +151,17 @@ struct TrayState {
     handle: Option<ksni::Handle<ClaudeBarTray>>,
 }
 
+impl TrayState {
+    fn sync_to_tray<F>(&self, updater: F)
+    where
+        F: FnOnce(&mut ClaudeBarTray) + Send + 'static,
+    {
+        if let Some(handle) = &self.handle {
+            handle.update(updater);
+        }
+    }
+}
+
 impl Default for TrayState {
     fn default() -> Self {
         Self {
@@ -166,14 +177,14 @@ impl Default for TrayState {
 }
 
 struct TrayManagerInner {
-    states: std::collections::HashMap<Provider, TrayState>,
+    states: HashMap<Provider, TrayState>,
     merged_mode: bool,
 }
 
 impl Default for TrayManagerInner {
     fn default() -> Self {
         Self {
-            states: std::collections::HashMap::new(),
+            states: HashMap::new(),
             merged_mode: true,
         }
     }
@@ -199,7 +210,7 @@ impl TrayManager {
         self.event_rx.write().await.take()
     }
 
-    pub async fn start(&self, settings: &Settings, _store: &Arc<UsageStore>) -> anyhow::Result<()> {
+    pub async fn start(&self, settings: &Settings) -> anyhow::Result<()> {
         let mut inner = self.inner.write().await;
         inner.merged_mode = settings.providers.merge_icons;
 
@@ -254,16 +265,11 @@ impl TrayManager {
             state.primary_percent = primary;
             state.secondary_percent = secondary;
             state.state = IconState::Normal;
-
-            if let Some(handle) = &state.handle {
-                let p = primary;
-                let s = secondary;
-                handle.update(move |tray| {
-                    tray.primary_percent = p;
-                    tray.secondary_percent = s;
-                    tray.state = IconState::Normal;
-                });
-            }
+            state.sync_to_tray(move |tray| {
+                tray.primary_percent = primary;
+                tray.secondary_percent = secondary;
+                tray.state = IconState::Normal;
+            });
         }
     }
 
@@ -272,13 +278,10 @@ impl TrayManager {
         if let Some(state) = inner.states.get_mut(&provider) {
             state.state = IconState::Loading;
             state.animation_phase = 0.0;
-
-            if let Some(handle) = &state.handle {
-                handle.update(|tray| {
-                    tray.state = IconState::Loading;
-                    tray.animation_phase = 0.0;
-                });
-            }
+            state.sync_to_tray(|tray| {
+                tray.state = IconState::Loading;
+                tray.animation_phase = 0.0;
+            });
         }
     }
 
@@ -287,13 +290,10 @@ impl TrayManager {
         if let Some(state) = inner.states.get_mut(&provider) {
             state.state = IconState::Error;
             state.has_credentials = false;
-
-            if let Some(handle) = &state.handle {
-                handle.update(|tray| {
-                    tray.state = IconState::Error;
-                    tray.has_credentials = false;
-                });
-            }
+            state.sync_to_tray(|tray| {
+                tray.state = IconState::Error;
+                tray.has_credentials = false;
+            });
         }
     }
 
@@ -302,12 +302,9 @@ impl TrayManager {
         let mut inner = self.inner.write().await;
         if let Some(state) = inner.states.get_mut(&provider) {
             state.state = IconState::Stale;
-
-            if let Some(handle) = &state.handle {
-                handle.update(|tray| {
-                    tray.state = IconState::Stale;
-                });
-            }
+            state.sync_to_tray(|tray| {
+                tray.state = IconState::Stale;
+            });
         }
     }
 
@@ -315,12 +312,9 @@ impl TrayManager {
         let mut inner = self.inner.write().await;
         if let Some(state) = inner.states.get_mut(&provider) {
             state.has_credentials = valid;
-
-            if let Some(handle) = &state.handle {
-                handle.update(move |tray| {
-                    tray.has_credentials = valid;
-                });
-            }
+            state.sync_to_tray(move |tray| {
+                tray.has_credentials = valid;
+            });
         }
     }
 
@@ -329,13 +323,10 @@ impl TrayManager {
         for state in inner.states.values_mut() {
             if state.state == IconState::Loading {
                 state.animation_phase += std::f64::consts::PI / 30.0;
-
-                if let Some(handle) = &state.handle {
-                    let phase = state.animation_phase;
-                    handle.update(move |tray| {
-                        tray.animation_phase = phase;
-                    });
-                }
+                let phase = state.animation_phase;
+                state.sync_to_tray(move |tray| {
+                    tray.animation_phase = phase;
+                });
             }
         }
     }

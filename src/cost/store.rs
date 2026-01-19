@@ -56,32 +56,24 @@ impl CostStore {
         let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
         let since = month_start - Duration::days(30);
 
+        let scanners: [(Provider, &dyn CostScanner); 2] = [
+            (Provider::Claude, &self.claude_scanner),
+            (Provider::Codex, &self.codex_scanner),
+        ];
+
         let mut results = HashMap::new();
-
-        match self.claude_scanner.scan(since, today) {
-            Ok(costs) => {
-                let snapshot = Self::aggregate_costs(&costs, today, month_start);
-                self.cached_costs.insert(Provider::Claude, snapshot.clone());
-                results.insert(Provider::Claude, snapshot);
-            }
-            Err(e) => {
-                tracing::warn!(provider = "Claude", error = %e, "Failed to scan costs");
-                if let Some(cached) = self.cached_costs.get(&Provider::Claude) {
-                    results.insert(Provider::Claude, cached.clone());
+        for (provider, scanner) in scanners {
+            match scanner.scan(since, today) {
+                Ok(costs) => {
+                    let snapshot = Self::aggregate_costs(&costs, today, month_start);
+                    self.cached_costs.insert(provider, snapshot.clone());
+                    results.insert(provider, snapshot);
                 }
-            }
-        }
-
-        match self.codex_scanner.scan(since, today) {
-            Ok(costs) => {
-                let snapshot = Self::aggregate_costs(&costs, today, month_start);
-                self.cached_costs.insert(Provider::Codex, snapshot.clone());
-                results.insert(Provider::Codex, snapshot);
-            }
-            Err(e) => {
-                tracing::warn!(provider = "Codex", error = %e, "Failed to scan costs");
-                if let Some(cached) = self.cached_costs.get(&Provider::Codex) {
-                    results.insert(Provider::Codex, cached.clone());
+                Err(e) => {
+                    tracing::warn!(?provider, error = %e, "Failed to scan costs");
+                    if let Some(cached) = self.cached_costs.get(&provider) {
+                        results.insert(provider, cached.clone());
+                    }
                 }
             }
         }

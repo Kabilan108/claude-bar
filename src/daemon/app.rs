@@ -1,4 +1,4 @@
-use crate::core::models::Provider;
+use crate::core::models::{CostSnapshot, Provider, UsageSnapshot};
 use crate::core::retry::RetryState;
 use crate::core::settings::SettingsWatcher;
 use crate::core::store::UsageStore;
@@ -10,7 +10,9 @@ use anyhow::Result;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
@@ -29,12 +31,8 @@ pub async fn run() -> Result<()> {
 
     let registry = Arc::new(ProviderRegistry::new(&settings));
 
-    tray_manager.start(&settings, &store).await?;
-
-    let animation_manager = Arc::clone(&tray_manager);
-    tokio::spawn(async move {
-        run_animation_loop(animation_manager).await;
-    });
+    tray_manager.start(&settings).await?;
+    tokio::spawn(run_animation_loop(Arc::clone(&tray_manager)));
 
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
 
@@ -104,13 +102,13 @@ async fn handle_dbus_commands(
 enum UiCommand {
     ShowPopup {
         provider: Provider,
-        snapshot: Option<crate::core::models::UsageSnapshot>,
-        cost: Option<crate::core::models::CostSnapshot>,
+        snapshot: Option<UsageSnapshot>,
+        cost: Option<CostSnapshot>,
         error: Option<(String, String)>,
     },
     UpdateUsage {
         provider: Provider,
-        snapshot: crate::core::models::UsageSnapshot,
+        snapshot: UsageSnapshot,
     },
 }
 
@@ -119,9 +117,7 @@ async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Res
     adw::init().expect("Failed to initialize libadwaita");
 
     let app = adw::Application::builder().application_id(APP_ID).build();
-
-    let popup_holder: std::rc::Rc<std::cell::RefCell<Option<PopupWindow>>> =
-        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let popup_holder: Rc<RefCell<Option<PopupWindow>>> = Rc::new(RefCell::new(None));
 
     let popup_holder_activate = popup_holder.clone();
     app.connect_activate(move |app| {
@@ -131,38 +127,14 @@ async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Res
     });
 
     let _hold_guard = app.hold();
-
     app.register(None::<&gtk4::gio::Cancellable>)?;
     app.activate();
 
     let popup_holder_idle = popup_holder.clone();
     glib::idle_add_local(move || {
         if let Ok(cmd) = ui_rx.try_recv() {
-            let popup_guard = popup_holder_idle.borrow();
-            if let Some(popup) = popup_guard.as_ref() {
-                match cmd {
-                    UiCommand::ShowPopup {
-                        provider,
-                        snapshot,
-                        cost,
-                        error,
-                    } => {
-                        if let Some((error_msg, hint)) = error {
-                            popup.show_error(provider, &error_msg, &hint);
-                        } else {
-                            if let Some(snap) = snapshot {
-                                popup.update_usage(provider, &snap);
-                            }
-                            if let Some(c) = cost {
-                                popup.update_cost(provider, &c);
-                            }
-                        }
-                        popup.show(provider);
-                    }
-                    UiCommand::UpdateUsage { provider, snapshot } => {
-                        popup.update_usage(provider, &snapshot);
-                    }
-                }
+            if let Some(popup) = popup_holder_idle.borrow().as_ref() {
+                handle_ui_command(popup, cmd);
             }
         }
         glib::ControlFlow::Continue
@@ -171,6 +143,32 @@ async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Res
     let main_context = glib::MainContext::default();
     loop {
         main_context.iteration(true);
+    }
+}
+
+fn handle_ui_command(popup: &PopupWindow, cmd: UiCommand) {
+    match cmd {
+        UiCommand::ShowPopup {
+            provider,
+            snapshot,
+            cost,
+            error,
+        } => {
+            if let Some((error_msg, hint)) = error {
+                popup.show_error(provider, &error_msg, &hint);
+            } else {
+                if let Some(snap) = snapshot {
+                    popup.update_usage(provider, &snap);
+                }
+                if let Some(c) = cost {
+                    popup.update_cost(provider, &c);
+                }
+            }
+            popup.show(provider);
+        }
+        UiCommand::UpdateUsage { provider, snapshot } => {
+            popup.update_usage(provider, &snapshot);
+        }
     }
 }
 
@@ -225,27 +223,10 @@ async fn handle_tray_event(
             for (provider, result) in results {
                 match result {
                     Ok(snapshot) => {
-                        let primary = snapshot
-                            .primary
-                            .as_ref()
-                            .map(|r| r.used_percent)
-                            .unwrap_or(0.0);
-                        let secondary = snapshot
-                            .secondary
-                            .as_ref()
-                            .map(|r| r.used_percent)
-                            .unwrap_or(0.0);
-                        store.update_snapshot(provider, snapshot.clone()).await;
-                        tray.update_icon(provider, primary, secondary).await;
-                        tray.set_credentials_valid(provider, true).await;
-
-                        let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+                        apply_successful_fetch(provider, snapshot, store, tray, ui_tx).await;
                     }
                     Err(e) => {
-                        let error_msg = e.to_string();
-                        tracing::warn!(?provider, error = %error_msg, "Failed to fetch usage");
-                        store.set_error(provider, error_msg).await;
-                        tray.set_error(provider).await;
+                        apply_failed_fetch(provider, &e, store, tray).await;
                     }
                 }
             }
@@ -324,9 +305,7 @@ async fn refresh_provider_with_retry(
     ui_tx: &mpsc::UnboundedSender<UiCommand>,
     provider: Provider,
 ) {
-    let result = registry.fetch_provider(provider).await;
-
-    match result {
+    match registry.fetch_provider(provider).await {
         Ok(snapshot) => {
             {
                 let mut states = retry_states.write().await;
@@ -341,22 +320,7 @@ async fn refresh_provider_with_retry(
                     state.record_success();
                 }
             }
-
-            let primary = snapshot
-                .primary
-                .as_ref()
-                .map(|r| r.used_percent)
-                .unwrap_or(0.0);
-            let secondary = snapshot
-                .secondary
-                .as_ref()
-                .map(|r| r.used_percent)
-                .unwrap_or(0.0);
-            store.update_snapshot(provider, snapshot.clone()).await;
-            tray.update_icon(provider, primary, secondary).await;
-            tray.set_credentials_valid(provider, true).await;
-
-            let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+            apply_successful_fetch(provider, snapshot, store, tray, ui_tx).await;
         }
         Err(e) => {
             let (next_delay, failures) = {
@@ -387,31 +351,12 @@ async fn refresh_provider(
     ui_tx: &mpsc::UnboundedSender<UiCommand>,
     provider: Provider,
 ) {
-    let result = registry.fetch_provider(provider).await;
-
-    match result {
+    match registry.fetch_provider(provider).await {
         Ok(snapshot) => {
-            let primary = snapshot
-                .primary
-                .as_ref()
-                .map(|r| r.used_percent)
-                .unwrap_or(0.0);
-            let secondary = snapshot
-                .secondary
-                .as_ref()
-                .map(|r| r.used_percent)
-                .unwrap_or(0.0);
-            store.update_snapshot(provider, snapshot.clone()).await;
-            tray.update_icon(provider, primary, secondary).await;
-            tray.set_credentials_valid(provider, true).await;
-
-            let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+            apply_successful_fetch(provider, snapshot, store, tray, ui_tx).await;
         }
         Err(e) => {
-            let error_msg = e.to_string();
-            tracing::warn!(?provider, error = %error_msg, "Failed to fetch usage");
-            store.set_error(provider, error_msg).await;
-            tray.set_error(provider).await;
+            apply_failed_fetch(provider, &e, store, tray).await;
         }
     }
 }
@@ -421,4 +366,36 @@ fn provider_error_hint(provider: Provider) -> &'static str {
         Provider::Claude => "Run `claude` to authenticate",
         Provider::Codex => "Run `codex` to authenticate",
     }
+}
+
+fn extract_percentages(snapshot: &UsageSnapshot) -> (f64, f64) {
+    let primary = snapshot.primary.as_ref().map_or(0.0, |r| r.used_percent);
+    let secondary = snapshot.secondary.as_ref().map_or(0.0, |r| r.used_percent);
+    (primary, secondary)
+}
+
+async fn apply_successful_fetch(
+    provider: Provider,
+    snapshot: UsageSnapshot,
+    store: &Arc<UsageStore>,
+    tray: &Arc<TrayManager>,
+    ui_tx: &mpsc::UnboundedSender<UiCommand>,
+) {
+    let (primary, secondary) = extract_percentages(&snapshot);
+    store.update_snapshot(provider, snapshot.clone()).await;
+    tray.update_icon(provider, primary, secondary).await;
+    tray.set_credentials_valid(provider, true).await;
+    let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+}
+
+async fn apply_failed_fetch(
+    provider: Provider,
+    error: &anyhow::Error,
+    store: &Arc<UsageStore>,
+    tray: &Arc<TrayManager>,
+) {
+    let error_msg = error.to_string();
+    tracing::warn!(?provider, error = %error_msg, "Failed to fetch usage");
+    store.set_error(provider, error_msg).await;
+    tray.set_error(provider).await;
 }

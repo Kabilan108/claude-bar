@@ -31,13 +31,8 @@ impl RetryState {
 
         let factor = BACKOFF_FACTOR.saturating_pow(self.consecutive_failures - 1);
         let delay_secs = BASE_DELAY.as_secs().saturating_mul(factor as u64);
-        let delay = Duration::from_secs(delay_secs);
 
-        if delay > MAX_DELAY {
-            MAX_DELAY
-        } else {
-            delay
-        }
+        Duration::from_secs(delay_secs).min(MAX_DELAY)
     }
 
     pub fn consecutive_failures(&self) -> u32 {

@@ -1,10 +1,9 @@
 use crate::core::models::DailyCost;
-use crate::cost::pricing::{PricingStore, TokenUsage};
-use crate::cost::scanner::CostScanner;
+use crate::cost::pricing::PricingStore;
+use crate::cost::scanner::{aggregate_entries, CostScanner, LogEntry};
 use anyhow::Result;
 use chrono::NaiveDate;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -31,95 +30,51 @@ impl CodexCostScanner {
     }
 
     fn find_jsonl_files(&self, since: NaiveDate, until: NaiveDate) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-
         if !self.sessions_dir.exists() {
-            return files;
+            return Vec::new();
         }
 
-        // Codex sessions are organized: sessions/YYYY/MM/DD/*.jsonl
-        for year_entry in std::fs::read_dir(&self.sessions_dir).into_iter().flatten() {
-            let year_entry = match year_entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            let year_path = year_entry.path();
-            if !year_path.is_dir() {
-                continue;
-            }
-
-            let year: i32 = match year_path.file_name().and_then(|n| n.to_str()) {
-                Some(s) => match s.parse() {
-                    Ok(y) => y,
-                    Err(_) => continue,
-                },
-                None => continue,
-            };
-
-            for month_entry in std::fs::read_dir(&year_path).into_iter().flatten() {
-                let month_entry = match month_entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
-                let month_path = month_entry.path();
-                if !month_path.is_dir() {
-                    continue;
-                }
-
-                let month: u32 = match month_path.file_name().and_then(|n| n.to_str()) {
-                    Some(s) => match s.parse() {
-                        Ok(m) => m,
-                        Err(_) => continue,
-                    },
-                    None => continue,
-                };
-
-                for day_entry in std::fs::read_dir(&month_path).into_iter().flatten() {
-                    let day_entry = match day_entry {
-                        Ok(e) => e,
-                        Err(_) => continue,
-                    };
-
-                    let day_path = day_entry.path();
-                    if !day_path.is_dir() {
-                        continue;
-                    }
-
-                    let day: u32 = match day_path.file_name().and_then(|n| n.to_str()) {
-                        Some(s) => match s.parse() {
-                            Ok(d) => d,
-                            Err(_) => continue,
-                        },
-                        None => continue,
-                    };
-
-                    let date = match NaiveDate::from_ymd_opt(year, month, day) {
-                        Some(d) => d,
-                        None => continue,
-                    };
-
-                    if date < since || date > until {
-                        continue;
-                    }
-
-                    for file_entry in std::fs::read_dir(&day_path).into_iter().flatten() {
-                        let file_entry = match file_entry {
-                            Ok(e) => e,
-                            Err(_) => continue,
-                        };
-
-                        let file_path = file_entry.path();
-                        if file_path.extension().is_some_and(|ext| ext == "jsonl") {
-                            files.push(file_path);
+        Self::list_subdirs(&self.sessions_dir)
+            .flat_map(|year_path| {
+                let year: i32 = Self::parse_dir_name(&year_path)?;
+                Some(Self::list_subdirs(&year_path).flat_map(move |month_path| {
+                    let month: u32 = Self::parse_dir_name(&month_path)?;
+                    Some(Self::list_subdirs(&month_path).filter_map(move |day_path| {
+                        let day: u32 = Self::parse_dir_name(&day_path)?;
+                        let date = NaiveDate::from_ymd_opt(year, month, day)?;
+                        if date < since || date > until {
+                            return None;
                         }
-                    }
-                }
-            }
-        }
+                        Some(Self::list_jsonl_files(&day_path))
+                    }))
+                }))
+            })
+            .flatten()
+            .flatten()
+            .flatten()
+            .collect()
+    }
 
-        files
+    fn list_subdirs(dir: &Path) -> impl Iterator<Item = PathBuf> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+    }
+
+    fn list_jsonl_files(dir: &Path) -> impl Iterator<Item = PathBuf> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "jsonl"))
+    }
+
+    fn parse_dir_name<T: std::str::FromStr>(path: &Path) -> Option<T> {
+        path.file_name()?.to_str()?.parse().ok()
     }
 
     fn parse_file(&self, path: &PathBuf, date: NaiveDate) -> Result<Vec<LogEntry>> {
@@ -206,6 +161,7 @@ impl CodexCostScanner {
                                 model,
                                 input_tokens: delta_input.saturating_sub(delta_cached),
                                 output_tokens: delta_output,
+                                cache_creation_tokens: 0,
                                 cache_read_tokens: delta_cached,
                             });
                         }
@@ -232,47 +188,22 @@ impl CostScanner for CodexCostScanner {
         let files = self.find_jsonl_files(since, until);
         tracing::debug!(count = files.len(), "Found JSONL files");
 
-        let mut aggregated: HashMap<(NaiveDate, String), TokenUsage> = HashMap::new();
-
-        for file in files {
-            let date = Self::extract_date_from_path(&file).unwrap_or(since);
-
-            match self.parse_file(&file, date) {
-                Ok(entries) => {
-                    for entry in entries {
-                        let key = (entry.date, entry.model.clone());
-                        let usage = aggregated.entry(key).or_default();
-                        usage.input_tokens += entry.input_tokens;
-                        usage.output_tokens += entry.output_tokens;
-                        usage.cache_read_tokens += entry.cache_read_tokens;
+        let entries: Vec<LogEntry> = files
+            .iter()
+            .filter_map(|file| {
+                let date = Self::extract_date_from_path(file).unwrap_or(since);
+                match self.parse_file(file, date) {
+                    Ok(entries) => Some(entries),
+                    Err(e) => {
+                        tracing::debug!(?file, error = %e, "Failed to parse file");
+                        None
                     }
                 }
-                Err(e) => {
-                    tracing::debug!(?file, error = %e, "Failed to parse file");
-                }
-            }
-        }
-
-        let mut costs: Vec<DailyCost> = aggregated
-            .into_iter()
-            .map(|((date, model), usage)| {
-                let cost = self
-                    .pricing
-                    .get_price(&model)
-                    .map(|p| p.calculate_cost(&usage))
-                    .unwrap_or_else(|| {
-                        tracing::debug!(model = %model, "No pricing found, estimating");
-                        let fallback_price = 2.5 / 1_000_000.0;
-                        (usage.input_tokens + usage.output_tokens) as f64 * fallback_price
-                    });
-
-                DailyCost { date, model, cost }
             })
+            .flatten()
             .collect();
 
-        costs.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.model.cmp(&b.model)));
-
-        Ok(costs)
+        Ok(aggregate_entries(entries, &self.pricing))
     }
 }
 
@@ -300,22 +231,10 @@ struct CodexTotals {
     output: u64,
 }
 
-#[derive(Debug)]
-struct LogEntry {
-    date: NaiveDate,
-    model: String,
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_tokens: u64,
-}
-
 #[derive(Debug, Deserialize)]
 struct RawCodexEntry {
     #[serde(rename = "type")]
     entry_type: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    timestamp: Option<String>,
     #[serde(default)]
     payload: Option<CodexPayload>,
 }

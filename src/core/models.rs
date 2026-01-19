@@ -61,14 +61,10 @@ pub struct UsageSnapshot {
 impl UsageSnapshot {
     #[allow(dead_code)]
     pub fn max_usage(&self) -> f64 {
-        [
-            self.primary.as_ref().map(|r| r.used_percent),
-            self.secondary.as_ref().map(|r| r.used_percent),
-            self.opus.as_ref().map(|r| r.used_percent),
-        ]
-        .into_iter()
-        .flatten()
-        .fold(0.0, f64::max)
+        [&self.primary, &self.secondary, &self.opus]
+            .into_iter()
+            .filter_map(|w| w.as_ref().map(|r| r.used_percent))
+            .fold(0.0, f64::max)
     }
 }
 

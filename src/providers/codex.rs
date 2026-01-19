@@ -169,15 +169,12 @@ impl UsageProvider for CodexProvider {
         let usage: CodexUsageResponse =
             serde_json::from_str(&body).context("Failed to parse Codex usage response")?;
 
-        let (primary, secondary) = if let Some(rate_limit) = &usage.rate_limit {
-            let primary =
-                Self::window_to_rate_window(rate_limit.primary_window.as_ref(), "Session limit");
-            let secondary =
-                Self::window_to_rate_window(rate_limit.secondary_window.as_ref(), "Weekly limit");
-            (primary, secondary)
-        } else {
-            (None, None)
-        };
+        let (primary, secondary) = usage.rate_limit.as_ref().map_or((None, None), |rl| {
+            (
+                Self::window_to_rate_window(rl.primary_window.as_ref(), "Session limit"),
+                Self::window_to_rate_window(rl.secondary_window.as_ref(), "Weekly limit"),
+            )
+        });
 
         let plan = Self::format_plan_type(usage.plan_type.as_deref());
 
