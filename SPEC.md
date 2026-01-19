@@ -713,7 +713,7 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore
 
 ### 4.1 Pricing Fetcher
 
-- [ ] Create `cost/pricing.rs`:
+- [x] Create `cost/pricing.rs`:
   ```rust
   pub struct PricingStore {
       prices: HashMap<String, ModelPricing>,  // model_id -> pricing
@@ -733,14 +733,14 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore
       pub fn get_price(&self, model: &str) -> Option<&ModelPricing>;
   }
   ```
-- [ ] Fetch from models.dev API
-- [ ] Cache to `~/.cache/claude-bar/pricing.json`
-- [ ] Embed defaults in binary (same JSON format)
-- [ ] Refresh daily
+- [x] Fetch from models.dev API
+- [x] Cache to `~/.cache/claude-bar/pricing.json`
+- [x] Embed defaults in binary (same JSON format)
+- [x] Refresh daily
 
 ### 4.2 Log Scanner Base
 
-- [ ] Create `cost/scanner.rs` with scanner trait:
+- [x] Create `cost/scanner.rs` with scanner trait:
   ```rust
   pub trait CostScanner: Send + Sync {
       fn scan(&self, since: NaiveDate, until: NaiveDate) -> Result<Vec<DailyCost>>;
@@ -751,32 +751,32 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+Claude.swift`
 
-- [ ] Create `cost/claude.rs`
-- [ ] Find Claude project directories:
-  - [ ] `~/.claude/projects/`
-  - [ ] `~/.config/claude/projects/`
-- [ ] Parse JSONL log files:
-  - [ ] One JSON object per line
-  - [ ] Extract: timestamp, model, input_tokens, output_tokens
-  - [ ] Skip malformed lines (log at debug level)
-- [ ] Calculate costs using pricing store
+- [x] Create `cost/claude.rs`
+- [x] Find Claude project directories:
+  - [x] `~/.claude/projects/`
+  - [x] `~/.config/claude/projects/`
+- [x] Parse JSONL log files:
+  - [x] One JSON object per line
+  - [x] Extract: timestamp, model, input_tokens, output_tokens
+  - [x] Skip malformed lines (log at debug level)
+- [x] Calculate costs using pricing store
 - [ ] Cache results to `~/.cache/claude-bar/claude-cost.json`
 
 ### 4.4 Codex Log Scanner
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner.swift`
 
-- [ ] Create `cost/codex.rs`
-- [ ] Find Codex session directories:
-  - [ ] `~/.codex/sessions/YYYY/MM/DD/*.jsonl`
-  - [ ] `$CODEX_HOME/sessions/` if set
-- [ ] Parse JSONL session logs
-- [ ] Calculate costs using pricing store
+- [x] Create `cost/codex.rs`
+- [x] Find Codex session directories:
+  - [x] `~/.codex/sessions/YYYY/MM/DD/*.jsonl`
+  - [x] `$CODEX_HOME/sessions/` if set
+- [x] Parse JSONL session logs
+- [x] Calculate costs using pricing store
 - [ ] Cache results to `~/.cache/claude-bar/codex-cost.json`
 
 ### 4.5 Cost Store Integration
 
-- [ ] Create `cost/store.rs`:
+- [x] Create `cost/store.rs`:
   ```rust
   pub struct CostStore {
       claude_scanner: ClaudeCostScanner,
@@ -791,6 +791,41 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore
   }
   ```
 - [ ] Integrate with main polling loop
+
+### Phase 4 Notes
+
+**Pricing implementation:**
+- `ModelPricing` extended to support prompt caching: `cache_creation_price_per_million`, `cache_read_price_per_million`
+- Tiered pricing supported for models like Claude Sonnet 4 (different rates above 200k tokens): `threshold_tokens`, `*_above_threshold` fields
+- `TokenUsage` struct holds all token counts: input, output, cache_creation, cache_read
+- `calculate_cost()` method handles both tiered and flat pricing automatically
+- Model name normalization strips prefixes ("anthropic.", "openai/"), suffixes ("-codex", "-v1:0")
+- Fuzzy matching for model lookups (partial matches when exact match fails)
+
+**Claude log scanner:**
+- Parses `type: "assistant"` entries with `message.usage` data
+- Deduplication using `messageId:requestId` key (handles streaming chunks)
+- Extracts: `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`
+- Recursive directory walk to find all `.jsonl` files
+- Filters by date from filename if present (YYYY-MM-DD.jsonl) or parses all
+
+**Codex log scanner:**
+- Uses directory structure for date filtering: `sessions/YYYY/MM/DD/*.jsonl`
+- Two entry types: `turn_context` (sets current model) and `event_msg` (token counts)
+- Delta calculation from cumulative totals (Codex reports running totals, not per-request)
+- Supports both `cached_input_tokens` and `cache_read_input_tokens` field names
+
+**Cost store:**
+- Combines both scanners with shared pricing store
+- `scan_all()` returns CostSnapshot per provider with today/monthly aggregation
+- `scan_provider()` for single-provider refresh
+- Pricing refresh with 24-hour cache validity
+- Cached costs retained on scan failure for resilience
+
+**Deferred to future phases:**
+- Per-file caching with mtime-based invalidation (not needed for initial release)
+- Incremental parsing from byte offset (optimization)
+- Integration with main polling loop (Phase 7)
 
 ---
 
@@ -1306,10 +1341,10 @@ Key files in the original CodexBar implementation to reference:
 - [x] Provider registry working
 
 **Phase 4: Cost Tracking**
-- [ ] Pricing fetcher (models.dev) working
-- [ ] Claude log scanner working
-- [ ] Codex log scanner working
-- [ ] Cost store integrated
+- [x] Pricing fetcher (models.dev) working
+- [x] Claude log scanner working
+- [x] Codex log scanner working
+- [x] Cost store integrated
 
 **Phase 5: System Tray Integration**
 - [ ] SNI tray setup working
