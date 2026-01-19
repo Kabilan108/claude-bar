@@ -46,6 +46,9 @@
 
           inherit nativeBuildInputs buildInputs;
 
+          # Tests require fontconfig/GTK which don't work in the Nix sandbox
+          doCheck = false;
+
           postInstall = ''
             # Generate shell completions
             mkdir -p $out/share/bash-completion/completions
