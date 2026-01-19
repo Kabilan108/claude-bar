@@ -297,6 +297,7 @@ impl TrayManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn set_stale(&self, provider: Provider) {
         let mut inner = self.inner.write().await;
         if let Some(state) = inner.states.get_mut(&provider) {
@@ -355,6 +356,7 @@ impl TrayManager {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn is_merged_mode(&self) -> bool {
         self.inner.read().await.merged_mode
     }

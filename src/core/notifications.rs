@@ -2,6 +2,7 @@ use crate::core::models::Provider;
 use anyhow::Result;
 use notify_rust::Notification;
 
+#[allow(dead_code)]
 pub fn send_high_usage_notification(provider: Provider, percent: f64) -> Result<()> {
     let percent_display = (percent * 100.0).round() as u32;
 

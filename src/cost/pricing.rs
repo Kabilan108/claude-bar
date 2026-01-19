@@ -82,6 +82,7 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
+    #[allow(dead_code)]
     pub fn new(input: u64, output: u64) -> Self {
         Self {
             input_tokens: input,
@@ -90,6 +91,7 @@ impl TokenUsage {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_cache(mut self, creation: u64, read: u64) -> Self {
         self.cache_creation_tokens = creation;
         self.cache_read_tokens = read;
@@ -424,6 +426,7 @@ impl PricingStore {
         None
     }
 
+    #[allow(dead_code)]
     pub fn last_fetch(&self) -> Option<DateTime<Utc>> {
         self.last_fetch
     }

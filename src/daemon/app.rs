@@ -16,7 +16,6 @@ use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 const APP_ID: &str = "com.github.kabilan.claude-bar";
-const REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 
 pub async fn run() -> Result<()> {
     tracing::info!(app_id = APP_ID, "Initializing GTK application");
@@ -113,10 +112,6 @@ enum UiCommand {
         provider: Provider,
         snapshot: crate::core::models::UsageSnapshot,
     },
-    UpdateCost {
-        provider: Provider,
-        cost: crate::core::models::CostSnapshot,
-    },
 }
 
 async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Result<()> {
@@ -166,9 +161,6 @@ async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Res
                     }
                     UiCommand::UpdateUsage { provider, snapshot } => {
                         popup.update_usage(provider, &snapshot);
-                    }
-                    UiCommand::UpdateCost { provider, cost } => {
-                        popup.update_cost(provider, &cost);
                     }
                 }
             }

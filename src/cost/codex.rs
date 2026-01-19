@@ -314,6 +314,7 @@ struct RawCodexEntry {
     #[serde(rename = "type")]
     entry_type: String,
     #[serde(default)]
+    #[allow(dead_code)]
     timestamp: Option<String>,
     #[serde(default)]
     payload: Option<CodexPayload>,

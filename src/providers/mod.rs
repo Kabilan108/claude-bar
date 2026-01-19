@@ -16,6 +16,7 @@ pub trait UsageProvider: Send + Sync {
     fn name(&self) -> &'static str;
     fn identifier(&self) -> Provider;
     async fn fetch_usage(&self) -> Result<UsageSnapshot>;
+    #[allow(dead_code)]
     fn dashboard_url(&self) -> &'static str;
     fn has_valid_credentials(&self) -> bool;
     fn credential_error_hint(&self) -> &'static str;
@@ -40,10 +41,12 @@ impl ProviderRegistry {
         Self { providers }
     }
 
+    #[allow(dead_code)]
     pub fn enabled_providers(&self) -> impl Iterator<Item = &dyn UsageProvider> {
         self.providers.iter().map(|p| p.as_ref())
     }
 
+    #[allow(dead_code)]
     pub fn primary_provider(&self) -> Option<&dyn UsageProvider> {
         self.providers.first().map(|p| p.as_ref())
     }
@@ -69,6 +72,7 @@ impl ProviderRegistry {
         anyhow::bail!("Provider {:?} not enabled", provider)
     }
 
+    #[allow(dead_code)]
     pub fn get_provider(&self, provider: Provider) -> Option<&dyn UsageProvider> {
         self.providers
             .iter()

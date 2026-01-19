@@ -103,6 +103,7 @@ impl PopupWindow {
         self.start_live_updates();
     }
 
+    #[allow(dead_code)]
     pub fn hide(&self) {
         self.stop_live_updates();
         self.window.set_visible(false);
@@ -149,6 +150,7 @@ impl PopupWindow {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_show_as_remaining(&self, show_as_remaining: bool) {
         {
             let mut state = self.provider_state.borrow_mut();

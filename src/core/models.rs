@@ -36,6 +36,7 @@ impl RateWindow {
         1.0 - self.used_percent
     }
 
+    #[allow(dead_code)]
     pub fn is_high_usage(&self, threshold: f64) -> bool {
         self.used_percent >= threshold
     }
@@ -58,6 +59,7 @@ pub struct UsageSnapshot {
 }
 
 impl UsageSnapshot {
+    #[allow(dead_code)]
     pub fn max_usage(&self) -> f64 {
         [
             self.primary.as_ref().map(|r| r.used_percent),

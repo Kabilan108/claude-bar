@@ -20,6 +20,7 @@ impl ClaudeBarService {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_refreshing(&self, refreshing: bool) {
         self.is_refreshing
             .store(refreshing, std::sync::atomic::Ordering::SeqCst);

@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub const BRAND_COLOR: &str = "#F5A623";
 
 pub const CSS: &str = r#"

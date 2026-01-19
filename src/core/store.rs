@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum StoreUpdate {
     UsageUpdated(Provider),
     CostUpdated(Provider),
@@ -18,6 +19,7 @@ struct StoreInner {
     costs: HashMap<Provider, CostSnapshot>,
     errors: HashMap<Provider, String>,
     last_fetch: HashMap<Provider, Instant>,
+    #[allow(dead_code)]
     notified_90_percent: HashSet<Provider>,
 }
 
@@ -36,6 +38,7 @@ impl UsageStore {
         }
     }
 
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<StoreUpdate> {
         self.update_tx.subscribe()
     }
@@ -67,6 +70,7 @@ impl UsageStore {
         let _ = self.update_tx.send(StoreUpdate::UsageUpdated(provider));
     }
 
+    #[allow(dead_code)]
     pub async fn update_cost(&self, provider: Provider, cost: CostSnapshot) {
         self.inner.write().await.costs.insert(provider, cost);
         let _ = self.update_tx.send(StoreUpdate::CostUpdated(provider));
@@ -89,6 +93,7 @@ impl UsageStore {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn should_notify(&self, provider: Provider, threshold: f64) -> bool {
         let inner = self.inner.read().await;
 
@@ -103,6 +108,7 @@ impl UsageStore {
         snapshot.max_usage() >= threshold
     }
 
+    #[allow(dead_code)]
     pub async fn mark_notified(&self, provider: Provider) {
         self.inner
             .write()
@@ -111,6 +117,7 @@ impl UsageStore {
             .insert(provider);
     }
 
+    #[allow(dead_code)]
     pub async fn reset_notification(&self, provider: Provider) {
         self.inner
             .write()
@@ -119,6 +126,7 @@ impl UsageStore {
             .remove(&provider);
     }
 
+    #[allow(dead_code)]
     pub async fn all_providers_with_snapshots(&self) -> Vec<(Provider, UsageSnapshot)> {
         self.inner
             .read()

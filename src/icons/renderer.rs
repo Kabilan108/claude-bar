@@ -8,6 +8,7 @@ pub enum IconState {
     Normal,
     Loading,
     Error,
+    #[allow(dead_code)]
     Stale,
 }
 
@@ -20,6 +21,7 @@ impl IconRenderer {
         Self { size: ICON_SIZE }
     }
 
+    #[allow(dead_code)]
     pub fn with_size(size: u32) -> Self {
         Self { size }
     }

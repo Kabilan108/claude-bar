@@ -89,6 +89,7 @@ impl CostStore {
         results
     }
 
+    #[allow(dead_code)]
     pub fn scan_provider(&mut self, provider: Provider) -> Option<CostSnapshot> {
         let today = Local::now().date_naive();
         let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
@@ -112,10 +113,12 @@ impl CostStore {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_cached(&self, provider: Provider) -> Option<&CostSnapshot> {
         self.cached_costs.get(&provider)
     }
 
+    #[allow(dead_code)]
     pub fn pricing(&self) -> &PricingStore {
         &self.pricing
     }

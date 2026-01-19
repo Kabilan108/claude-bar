@@ -109,6 +109,7 @@ impl Settings {
 
 pub struct SettingsWatcher {
     settings: Arc<RwLock<Settings>>,
+    #[allow(dead_code)]
     update_tx: broadcast::Sender<Settings>,
     _watcher: Option<RecommendedWatcher>,
 }
@@ -128,6 +129,7 @@ impl SettingsWatcher {
         })
     }
 
+    #[allow(dead_code)]
     pub fn start_watching(&mut self) -> Result<()> {
         let Some(config_path) = Settings::config_path() else {
             tracing::warn!("Could not determine config path, hot-reload disabled");
@@ -198,10 +200,12 @@ impl SettingsWatcher {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<Settings> {
         self.update_tx.subscribe()
     }
 
+    #[allow(dead_code)]
     pub async fn get(&self) -> Settings {
         self.settings.read().await.clone()
     }
