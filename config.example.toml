@@ -1,0 +1,41 @@
+# Claude Bar Configuration
+# Copy to ~/.config/claude-bar/config.toml
+
+# Provider settings
+[providers]
+# Show a single merged icon (true) or separate icons per provider (false)
+merge_icons = true
+
+[providers.claude]
+# Enable Claude Code usage monitoring
+enabled = true
+
+[providers.codex]
+# Enable Codex usage monitoring
+enabled = true
+
+# Display settings
+[display]
+# Show usage as "remaining" instead of "used"
+# false: "78% used"
+# true: "22% remaining"
+show_as_remaining = false
+
+# Browser settings
+[browser]
+# Preferred browser command (optional)
+# If not set, uses xdg-open
+# preferred = "firefox"
+
+# Notification settings
+[notifications]
+# Enable desktop notifications for high usage warnings
+enabled = true
+
+# Usage threshold (0.0-1.0) at which to show warning
+# 0.9 = 90% usage
+threshold = 0.9
+
+# Debug mode
+# Enables verbose logging and debug tooltips
+debug = false

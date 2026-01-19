@@ -1,204 +1,180 @@
 # Claude Bar - Agent Instructions
 
-## Project Overview
+A Rust/GTK4 Linux system tray application for monitoring AI coding assistant usage limits, quotas, and costs. This is a port of [CodexBar](../2026-01-16-steipete-CodexBar/) (macOS).
 
-Claude Bar is a Linux system tray application for monitoring AI coding assistant usage limits, quotas, and costs. It's a Rust/GTK4 port of [CodexBar](https://github.com/steipete/CodexBar) (macOS).
+## Build Instructions
 
-**Target providers**: Claude Code, Codex (Phase 1); Cursor, OpenCode Zen (Future)
-
-## Quick Start
+### Development Environment
 
 ```bash
-# Enter dev environment
+# Enter the development shell
 nix develop
 
-# Build all crates
-cargo build --workspace
-
-# Run the daemon
-cargo run -p claude-bar
-
-# Run the CLI
-cargo run -p claude-bar-cli -- status
-
-# Run tests
-cargo test --workspace
+# Or with direnv (automatic)
+direnv allow
 ```
 
-## Project Structure
+### Building
 
-```
-claude-bar/
-├── SPEC.md              # Implementation specification (READ THIS FIRST)
-├── AGENTS.md            # This file
-├── flake.nix            # Nix development environment
-├── Cargo.toml           # Workspace root
-├── crates/
-│   ├── claude-bar/      # Main daemon (tray + GTK popup)
-│   ├── claude-bar-core/ # Shared library (models, providers, cost)
-│   └── claude-bar-cli/  # Command-line tool
-└── nix/
-    └── hm-module.nix    # Home Manager module
-```
+```bash
+# Debug build
+cargo build
 
-## Specification
+# Release build
+cargo build --release
 
-**Always read `SPEC.md` before starting work.** It contains:
-- Detailed phase-by-phase implementation plan
-- Todo items to check off as you complete work
-- References to the original CodexBar files for each component
-- Data models and API details
-
-## Reference Implementation
-
-The original macOS implementation is at:
-```
-/vault/experiments/2026-01-16-steipete-CodexBar/
+# Run directly
+cargo run -- daemon
+cargo run -- status
+cargo run -- cost
 ```
 
-Key directories:
-- `Sources/CodexBarCore/` - Core logic (providers, models, cost tracking)
-- `Sources/CodexBar/` - UI layer (tray, popup views)
-- `Sources/CodexBarCLI/` - CLI tool
+### Testing
 
-When porting logic, reference the Swift files listed in SPEC.md's "Reference Files" section.
+```bash
+# Run all tests
+cargo test
+
+# Run with output
+cargo test -- --nocapture
+
+# Run specific test
+cargo test test_name
+```
+
+### Linting
+
+```bash
+cargo clippy -- -W clippy::all
+cargo fmt --check
+```
+
+## Architecture
+
+```
+src/
+├── main.rs            # Entry point, clap subcommand dispatch
+├── lib.rs             # Shared library code
+├── cli/               # CLI subcommands (status, cost, refresh)
+├── daemon/            # Daemon mode (tray, polling, D-Bus)
+├── ui/                # GTK popup window and widgets
+├── core/              # Data models, settings, stores
+├── providers/         # Provider implementations (Claude, Codex)
+├── cost/              # Cost tracking and log scanning
+└── icons/             # Icon rendering
+```
+
+### Key Components
+
+- **UsageStore**: In-memory store for usage snapshots, thread-safe with change notifications
+- **CostStore**: Scans local JSONL logs to calculate API spending
+- **SettingsStore**: TOML configuration with inotify hot-reload
+- **Provider Registry**: Manages enabled providers, coordinates fetching
+- **SNI Tray**: System tray icons via StatusNotifierItem (ksni)
+- **GTK Popup**: libadwaita popup with usage details
 
 ## Coding Conventions
 
 ### Rust Style
+
 - Follow standard Rust conventions (rustfmt, clippy)
-- Use `thiserror` for error types
-- Use `tracing` for logging (not println!)
-- Prefer `async/await` with tokio for I/O
+- Use `thiserror` for error types, `anyhow` for propagation
+- Prefer explicit error handling over unwrap/expect in library code
+- Use `tracing` for structured logging
 
 ### Error Handling
-- Return `Result<T, E>` from fallible functions
-- Use `?` for propagation
-- Create domain-specific error types
-- Never panic in library code
 
-### Testing
-- Write unit tests in the same file (`#[cfg(test)]`)
-- Use mock responses for API tests
-- Test error cases, not just happy paths
+```rust
+// Define specific errors with thiserror
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderError {
+    #[error("credentials not found: {0}")]
+    CredentialsNotFound(String),
+    #[error("token expired")]
+    TokenExpired,
+    #[error("API error: {0}")]
+    Api(#[from] reqwest::Error),
+}
 
-### Comments
-- Don't comment what the code does (code should be self-documenting)
-- Do comment **why** for non-obvious decisions
-- No commented-out code
-
-## Key Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| `tokio` | Async runtime |
-| `reqwest` | HTTP client |
-| `serde` | Serialization |
-| `toml` | Config parsing |
-| `ksni` | System tray (SNI) |
-| `gtk4` | GUI toolkit |
-| `libadwaita` | Modern GTK styling |
-| `keyring` | Secret storage |
-| `clap` | CLI parsing |
-| `tracing` | Logging |
-| `chrono` | Date/time |
-
-## Architecture Notes
-
-### Data Flow
-1. Polling loop fetches usage from provider APIs every 60 seconds
-2. Cost scanner parses local JSONL logs for spending data
-3. UsageStore holds snapshots, notifies tray/popup on changes
-4. Tray icons render two-bar meters from UsageStore
-5. Popup shows detailed view, triggers instant refresh on open
-
-### Provider Authentication
-- **Claude**: Reads OAuth tokens from `~/.claude/.credentials.json` (created by `claude login`)
-- **Codex**: Reads OAuth tokens from `~/.codex/auth.json` (created by `codex login`)
-
-We never handle passwords - just read tokens created by the official CLIs.
-
-### System Tray
-- Uses StatusNotifierItem (SNI) protocol via `ksni` crate
-- One tray icon per enabled provider
-- Icons are 22x22 RGBA pixmaps with two-bar meter
-
-### Config Location
-- Config: `~/.config/claude-bar/config.toml`
-- Cache: `~/.cache/claude-bar/`
-- Logs: `~/.local/share/claude-bar/`
-
-## Common Tasks
-
-### Adding a New Provider
-
-1. Create `crates/claude-bar-core/src/providers/<name>.rs`
-2. Implement `UsageProvider` trait
-3. Add to `Provider` enum in `models.rs`
-4. Register in `ProviderRegistry`
-5. Add settings in `SettingsStore`
-6. Reference the CodexBar implementation for API details
-
-### Modifying the Popup UI
-
-1. Edit `crates/claude-bar/src/ui/popup.rs`
-2. Use libadwaita widgets for consistency
-3. Test both light and dark modes
-4. Keep layout consistent with other providers
-
-### Adding a CLI Command
-
-1. Add subcommand to `crates/claude-bar-cli/src/main.rs`
-2. Implement handler using core library
-3. Support both text and JSON output formats
-
-## Debugging
-
-### Enable Debug Logging
-```bash
-RUST_LOG=debug cargo run -p claude-bar
+// Use anyhow::Result for CLI/daemon code
+pub async fn run() -> anyhow::Result<()> {
+    // ...
+}
 ```
 
-### Check Credentials
-```bash
-# Claude
-cat ~/.claude/.credentials.json | jq .
+### Async Code
 
-# Codex
-cat ~/.codex/auth.json | jq .
+- Use `tokio` for async runtime
+- Prefer `async-trait` for async trait methods
+- Use channels for inter-component communication
+
+### Thread Safety
+
+- Use `Arc<RwLock<T>>` for shared mutable state
+- Prefer message passing over shared state where possible
+
+## Reference Implementation
+
+The original macOS implementation is at `/vault/experiments/2026-01-16-steipete-CodexBar/`. Key files to reference:
+
+| Component | Reference File |
+|-----------|----------------|
+| Usage models | `Sources/CodexBarCore/UsageFetcher.swift` |
+| Claude provider | `Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift` |
+| Codex provider | `Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthUsageFetcher.swift` |
+| Cost scanning | `Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner.swift` |
+| Icon rendering | `Sources/CodexBar/IconRenderer.swift` |
+| Settings | `Sources/CodexBar/SettingsStore.swift` |
+
+## Spec Reference
+
+See `SPEC.md` for the full specification including:
+- Design decisions and rationale
+- API endpoints and data formats
+- UI layout and behavior
+- Phase-by-phase implementation checklist
+
+## Quick Reference
+
+### CLI Commands
+
+```bash
+claude-bar daemon     # Start the tray daemon
+claude-bar status     # Show usage status (standalone)
+claude-bar cost       # Show cost summary (standalone)
+claude-bar refresh    # Trigger daemon refresh via D-Bus
 ```
 
-### Test API Directly
-```bash
-# Claude usage API
-curl -H "Authorization: Bearer $(jq -r .accessToken ~/.claude/.credentials.json)" \
-     -H "anthropic-beta: oauth-2025-04-20" \
-     https://api.anthropic.com/api/oauth/usage
+### Configuration
+
+Config file: `~/.config/claude-bar/config.toml`
+
+```toml
+[providers]
+merge_icons = true
+
+[providers.claude]
+enabled = true
+
+[providers.codex]
+enabled = true
+
+[display]
+show_as_remaining = false
+
+[notifications]
+enabled = true
+threshold = 0.9
+
+debug = false
 ```
 
-## Troubleshooting
+### Credentials Locations
 
-### "No secret service available"
-The keyring crate needs a running secret service (GNOME Keyring, KDE Wallet, etc.).
-```bash
-# Check if running
-dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames | grep -i secret
-```
+- Claude: `~/.claude/.credentials.json`
+- Codex: `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`)
 
-### "GTK not found" during build
-Make sure you're in the nix dev shell:
-```bash
-nix develop
-```
+### Log Locations
 
-### Tray icon not appearing
-Check that your compositor/panel supports SNI:
-- Waybar: Enable `tray` module
-- Other bars: May need `snixembed` or similar
-
-## Links
-
-- [CodexBar (original)](https://github.com/nickvonkaenel/CodexBar)
-- [ksni docs](https://docs.rs/ksni)
-- [gtk4-rs docs](https://gtk-rs.org/gtk4-rs/stable/latest/docs/gtk4/)
-- [libadwaita docs](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/index.html)
+- Claude: `~/.claude/projects/` (JSONL files)
+- Codex: `~/.codex/sessions/` (JSONL files)

@@ -252,9 +252,9 @@ These decisions were made during the spec interview process.
 
 ### 1.1 Directory Structure
 
-- [ ] Create project directory at `/vault/experiments/2026-01-18-claude-bar/`
-- [ ] Initialize git repository
-- [ ] Create directory structure:
+- [x] Create project directory at `/vault/experiments/2026-01-18-claude-bar/`
+- [x] Initialize git repository
+- [x] Create directory structure:
   ```
   claude-bar/
   ├── flake.nix              # Nix dev environment + package
@@ -313,16 +313,16 @@ These decisions were made during the spec interview process.
 
 ### 1.2 Nix Flake
 
-- [ ] Create `flake.nix` with:
-  - [ ] Rust toolchain (stable, with rust-analyzer)
-  - [ ] GTK4 and libadwaita development libraries
-  - [ ] pkg-config for native dependencies
-  - [ ] D-Bus development files
-  - [ ] Development tools (cargo-watch, cargo-clippy)
-  - [ ] Shell completions installation
-- [ ] Add `direnv` integration (`.envrc` with `use flake`)
-- [ ] Verify `cargo build` works in dev shell
-- [ ] Package builds with completions for bash, zsh, fish
+- [x] Create `flake.nix` with:
+  - [x] Rust toolchain (stable, with rust-analyzer)
+  - [x] GTK4 and libadwaita development libraries
+  - [x] pkg-config for native dependencies
+  - [x] D-Bus development files
+  - [x] Development tools (cargo-watch, cargo-clippy)
+  - [x] Shell completions installation
+- [x] Add `direnv` integration (`.envrc` with `use flake`)
+- [x] Verify `cargo build` works in dev shell
+- [x] Package builds with completions for bash, zsh, fish
 
 **Dependencies to include in flake**:
 ```nix
@@ -340,7 +340,7 @@ rust-analyzer
 
 ### 1.3 Cargo Configuration
 
-- [ ] Create root `Cargo.toml`:
+- [x] Create root `Cargo.toml`:
   ```toml
   [package]
   name = "claude-bar"
@@ -380,25 +380,51 @@ rust-analyzer
   # Async traits
   async-trait = "0.1"
   ```
-- [ ] Verify `cargo check` passes
+- [x] Verify `cargo check` passes
 
 ### 1.4 AGENTS.md
 
-- [ ] Create `AGENTS.md` with:
-  - [ ] Project overview and goals
-  - [ ] Build instructions (`nix develop`, `cargo build`)
-  - [ ] Test instructions (`cargo test`)
-  - [ ] Architecture summary
-  - [ ] Coding conventions (Rust style, error handling)
-  - [ ] Reference to this SPEC.md
-  - [ ] Reference to original CodexBar for implementation details
+- [x] Create `AGENTS.md` with:
+  - [x] Project overview and goals
+  - [x] Build instructions (`nix develop`, `cargo build`)
+  - [x] Test instructions (`cargo test`)
+  - [x] Architecture summary
+  - [x] Coding conventions (Rust style, error handling)
+  - [x] Reference to this SPEC.md
+  - [x] Reference to original CodexBar for implementation details
 
 ### 1.5 Basic Scaffolding
 
-- [ ] Create minimal `main.rs` with clap subcommand structure
-- [ ] Create minimal `lib.rs` that compiles
-- [ ] Add `.gitignore` for Rust/Nix artifacts
-- [ ] Verify build: `cargo build`
+- [x] Create minimal `main.rs` with clap subcommand structure
+- [x] Create minimal `lib.rs` that compiles
+- [x] Add `.gitignore` for Rust/Nix artifacts
+- [x] Verify build: `cargo build`
+
+### Phase 1 Notes
+
+**Dependency versions updated from spec:**
+- `reqwest` 0.11 → 0.12 (current stable, with `rustls-tls` feature instead of default openssl)
+- `gtk4` 0.7 → 0.9 (current stable)
+- `libadwaita` 0.5 → 0.7 (matches gtk4 0.9)
+- `zbus` 3 → 4 (current stable, significant API changes)
+- Added `tracing-journald` for systemd journal logging
+- Added `clap_complete` for shell completion generation
+
+**Flake structure:**
+- Used `rust-overlay` for reproducible Rust toolchain
+- `wrapGAppsHook4` required for GTK4 apps to find schemas/icons at runtime
+- `graphene` needed as transitive GTK4 dependency
+- Shell completions generated in `postInstall` phase
+
+**Code organization:**
+- Kept `lib.rs` minimal (just re-exports modules) to avoid duplicate compilation
+- Tests live in their respective modules with `#[cfg(test)]` blocks
+- CLI subcommands dispatch to module functions rather than inline logic
+
+**zbus 4.x changes from 3.x:**
+- `#[dbus_interface]` → `#[interface]`
+- Signal syntax changed to associated functions with `SignalContext`
+- Connection methods are now async
 
 ---
 
@@ -1206,11 +1232,11 @@ Key files in the original CodexBar implementation to reference:
 ## Checklist Summary
 
 **Phase 1: Project Setup**
-- [ ] Directory structure created
-- [ ] flake.nix working
-- [ ] Cargo configured
-- [ ] AGENTS.md written
-- [ ] Basic scaffolding compiles
+- [x] Directory structure created
+- [x] flake.nix working
+- [x] Cargo configured
+- [x] AGENTS.md written
+- [x] Basic scaffolding compiles
 
 **Phase 2: Core Data Layer**
 - [ ] Data models implemented
