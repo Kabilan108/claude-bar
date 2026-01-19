@@ -11,6 +11,20 @@ use std::rc::Rc;
 const POPUP_WIDTH: i32 = 350;
 const UPDATE_INTERVAL_MS: u32 = 1000;
 
+fn label(text: &str, css_class: &str, align: gtk4::Align) -> gtk4::Label {
+    let label = gtk4::Label::new(Some(text));
+    label.add_css_class(css_class);
+    label.set_halign(align);
+    label
+}
+
+fn separator() -> gtk4::Separator {
+    let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+    sep.set_margin_top(8);
+    sep.set_margin_bottom(8);
+    sep
+}
+
 pub struct PopupWindow {
     window: adw::Window,
     content: gtk4::Box,
@@ -47,6 +61,7 @@ impl PopupWindow {
             .resizable(false)
             .deletable(true)
             .decorated(false)
+            .hide_on_close(true)
             .build();
 
         window.add_css_class("popup-window");
@@ -76,7 +91,7 @@ impl PopupWindow {
         let focus_controller = gtk4::EventControllerFocus::new();
         let window_clone = window.clone();
         focus_controller.connect_leave(move |_| {
-            window_clone.set_visible(false);
+            window_clone.close();
         });
         window.add_controller(focus_controller);
 
@@ -106,72 +121,53 @@ impl PopupWindow {
     #[allow(dead_code)]
     pub fn hide(&self) {
         self.stop_live_updates();
-        self.window.set_visible(false);
+        self.window.close();
     }
 
     pub fn update_usage(&self, provider: Provider, snapshot: &UsageSnapshot) {
-        {
-            let mut state = self.provider_state.borrow_mut();
-            if state.provider == provider {
-                state.snapshot = Some(snapshot.clone());
-                state.error = None;
-            }
-        }
-
-        if self.window.is_visible() {
-            self.rebuild_content();
-        }
+        self.update_state(provider, |state| {
+            state.snapshot = Some(snapshot.clone());
+            state.error = None;
+        });
     }
 
     pub fn update_cost(&self, provider: Provider, cost: &CostSnapshot) {
-        {
-            let mut state = self.provider_state.borrow_mut();
-            if state.provider == provider {
-                state.cost = Some(cost.clone());
-            }
-        }
-
-        if self.window.is_visible() {
-            self.rebuild_content();
-        }
+        self.update_state(provider, |state| {
+            state.cost = Some(cost.clone());
+        });
     }
 
     pub fn show_error(&self, provider: Provider, error: &str, hint: &str) {
-        {
-            let mut state = self.provider_state.borrow_mut();
-            if state.provider == provider {
-                state.error = Some((error.to_string(), hint.to_string()));
-                state.snapshot = None;
-            }
-        }
-
-        if self.window.is_visible() {
-            self.rebuild_content();
-        }
+        self.update_state(provider, |state| {
+            state.error = Some((error.to_string(), hint.to_string()));
+            state.snapshot = None;
+        });
     }
 
     #[allow(dead_code)]
     pub fn set_show_as_remaining(&self, show_as_remaining: bool) {
-        {
-            let mut state = self.provider_state.borrow_mut();
-            state.show_as_remaining = show_as_remaining;
-        }
+        self.provider_state.borrow_mut().show_as_remaining = show_as_remaining;
+        self.rebuild_if_visible();
+    }
 
+    fn update_state(&self, provider: Provider, f: impl FnOnce(&mut ProviderState)) {
+        let mut state = self.provider_state.borrow_mut();
+        if state.provider == provider {
+            f(&mut state);
+        }
+        drop(state);
+        self.rebuild_if_visible();
+    }
+
+    fn rebuild_if_visible(&self) {
         if self.window.is_visible() {
             self.rebuild_content();
         }
     }
 
     fn position_window(&self) {
-        // On Wayland, window positioning is controlled by the compositor.
-        // We cannot set x/y coordinates directly. The window will appear
-        // where the compositor decides (typically near the cursor or in a
-        // default position). For X11 compatibility, we could use
-        // gtk_window_move but that's deprecated in GTK4.
-        //
-        // For proper tray popup positioning on Wayland, we'd need to use
-        // layer-shell protocols, but that requires additional dependencies.
-        // For now, we just let the compositor handle positioning.
+        // Positioning is handled by the compositor on Wayland.
+        // Layer-shell protocols would be needed for precise placement.
     }
 
     fn rebuild_content(&self) {
@@ -182,11 +178,7 @@ impl PopupWindow {
         let state = self.provider_state.borrow();
 
         self.build_header(&state);
-
-        let separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-        separator.set_margin_top(8);
-        separator.set_margin_bottom(8);
-        self.content.append(&separator);
+        self.content.append(&separator());
 
         if let Some((error, hint)) = &state.error {
             self.build_error_section(error, hint);
@@ -194,58 +186,36 @@ impl PopupWindow {
             self.build_usage_sections(snapshot, state.show_as_remaining);
 
             if state.cost.is_some() || snapshot.primary.is_some() {
-                let cost_separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-                cost_separator.set_margin_top(8);
-                cost_separator.set_margin_bottom(8);
-                self.content.append(&cost_separator);
+                self.content.append(&separator());
             }
 
             if let Some(cost) = &state.cost {
                 self.build_cost_section(cost);
             }
 
-            let footer_separator = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-            footer_separator.set_margin_top(8);
-            footer_separator.set_margin_bottom(8);
-            self.content.append(&footer_separator);
-
+            self.content.append(&separator());
             self.build_footer(snapshot.updated_at);
         } else {
-            let placeholder = gtk4::Label::new(Some("No usage data yet"));
-            placeholder.add_css_class("dim-label");
-            self.content.append(&placeholder);
+            self.content.append(&label("No usage data yet", "dim-label", gtk4::Align::Start));
         }
     }
 
     fn build_header(&self, state: &ProviderState) {
         let header_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-
         let title_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
 
-        let provider_name = gtk4::Label::new(Some(state.provider.name()));
-        provider_name.add_css_class("title-3");
-        provider_name.set_halign(gtk4::Align::Start);
+        let provider_name = label(state.provider.name(), "title-3", gtk4::Align::Start);
         provider_name.set_hexpand(true);
         title_row.append(&provider_name);
 
-        if let Some(snapshot) = &state.snapshot {
-            if let Some(email) = &snapshot.identity.email {
-                let email_label = gtk4::Label::new(Some(email));
-                email_label.add_css_class("dim-label");
-                email_label.set_halign(gtk4::Align::End);
-                title_row.append(&email_label);
-            }
+        if let Some(email) = state.snapshot.as_ref().and_then(|s| s.identity.email.as_ref()) {
+            title_row.append(&label(email, "dim-label", gtk4::Align::End));
         }
 
         header_box.append(&title_row);
 
-        if let Some(snapshot) = &state.snapshot {
-            if let Some(plan) = &snapshot.identity.plan {
-                let plan_label = gtk4::Label::new(Some(plan));
-                plan_label.add_css_class("dim-label");
-                plan_label.set_halign(gtk4::Align::Start);
-                header_box.append(&plan_label);
-            }
+        if let Some(plan) = state.snapshot.as_ref().and_then(|s| s.identity.plan.as_ref()) {
+            header_box.append(&label(plan, "dim-label", gtk4::Align::Start));
         }
 
         self.content.append(&header_box);
@@ -268,15 +238,10 @@ impl PopupWindow {
     fn build_usage_row(&self, title: &str, window: &RateWindow, show_as_remaining: bool) {
         let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         section.set_margin_top(8);
-
-        let title_label = gtk4::Label::new(Some(title));
-        title_label.add_css_class("heading");
-        title_label.set_halign(gtk4::Align::Start);
-        section.append(&title_label);
+        section.append(&label(title, "heading", gtk4::Align::Start));
 
         let progress_bar = gtk4::ProgressBar::new();
         progress_bar.add_css_class("usage-progress");
-
         let display_percent = if show_as_remaining {
             window.remaining_percent()
         } else {
@@ -286,24 +251,17 @@ impl PopupWindow {
         section.append(&progress_bar);
 
         let details_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-
         let percent_text = if show_as_remaining {
             format!("{:.0}% remaining", window.remaining_percent() * 100.0)
         } else {
             format!("{:.0}% used", window.used_percent * 100.0)
         };
-        let percent_label = gtk4::Label::new(Some(&percent_text));
-        percent_label.add_css_class("usage-label");
-        percent_label.set_halign(gtk4::Align::Start);
+        let percent_label = label(&percent_text, "usage-label", gtk4::Align::Start);
         percent_label.set_hexpand(true);
         details_row.append(&percent_label);
 
         if let Some(resets_at) = &window.resets_at {
-            let reset_text = format_reset_time(*resets_at);
-            let reset_label = gtk4::Label::new(Some(&reset_text));
-            reset_label.add_css_class("countdown-label");
-            reset_label.set_halign(gtk4::Align::End);
-            details_row.append(&reset_label);
+            details_row.append(&label(&format_reset_time(*resets_at), "countdown-label", gtk4::Align::End));
         }
 
         section.append(&details_row);
@@ -312,58 +270,35 @@ impl PopupWindow {
 
     fn build_cost_section(&self, cost: &CostSnapshot) {
         let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-
-        let title_label = gtk4::Label::new(Some("Cost"));
-        title_label.add_css_class("heading");
-        title_label.set_halign(gtk4::Align::Start);
-        section.append(&title_label);
-
-        let today_text = format!("Today: ${:.2}", cost.today_cost);
-        let today_label = gtk4::Label::new(Some(&today_text));
-        today_label.add_css_class("cost-label");
-        today_label.set_halign(gtk4::Align::Start);
-        section.append(&today_label);
-
-        let month_text = format!("This month: ${:.2}", cost.monthly_cost);
-        let month_label = gtk4::Label::new(Some(&month_text));
-        month_label.add_css_class("cost-label");
-        month_label.set_halign(gtk4::Align::Start);
-        section.append(&month_label);
-
+        section.append(&label("Cost", "heading", gtk4::Align::Start));
+        section.append(&label(&format!("Today: ${:.2}", cost.today_cost), "cost-label", gtk4::Align::Start));
+        section.append(&label(&format!("This month: ${:.2}", cost.monthly_cost), "cost-label", gtk4::Align::Start));
         self.content.append(&section);
     }
 
     fn build_error_section(&self, error: &str, hint: &str) {
         let section = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
 
-        let error_label = gtk4::Label::new(Some(error));
+        let error_label = label(error, "error", gtk4::Align::Start);
         error_label.set_wrap(true);
-        error_label.set_halign(gtk4::Align::Start);
-        error_label.add_css_class("error");
         section.append(&error_label);
 
         let hint_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         hint_box.add_css_class("error-hint");
-
         let hint_label = gtk4::Label::new(Some(hint));
         hint_label.set_selectable(true);
         hint_label.set_halign(gtk4::Align::Start);
         hint_box.append(&hint_label);
-
         section.append(&hint_box);
+
         self.content.append(&section);
     }
 
     fn build_footer(&self, updated_at: DateTime<Utc>) {
         let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-
-        let updated_text = format_relative_time(updated_at);
-        let updated_label = gtk4::Label::new(Some(&updated_text));
-        updated_label.add_css_class("dim-label");
-        updated_label.set_halign(gtk4::Align::Start);
+        let updated_label = label(&format_relative_time(updated_at), "dim-label", gtk4::Align::Start);
         updated_label.set_hexpand(true);
         footer.append(&updated_label);
-
         self.content.append(&footer);
     }
 
