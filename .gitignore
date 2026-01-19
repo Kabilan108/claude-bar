@@ -6,6 +6,7 @@ Cargo.lock
 # Nix
 /result
 /.direnv/
+.envrc
 
 # IDE
 .idea/
