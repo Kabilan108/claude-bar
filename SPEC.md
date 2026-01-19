@@ -434,7 +434,7 @@ rust-analyzer
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore/UsageFetcher.swift`
 
-- [ ] Create `core/models.rs` with:
+- [x] Create `core/models.rs` with:
   ```rust
   #[derive(Debug, Clone, Serialize, Deserialize)]
   pub struct RateWindow {
@@ -481,13 +481,13 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore
       Codex,
   }
   ```
-- [ ] Add unit tests for model serialization
+- [x] Add unit tests for model serialization
 
 ### 2.2 Settings Store
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/SettingsStore.swift`
 
-- [ ] Create `core/settings.rs` with:
+- [x] Create `core/settings.rs` with:
   ```rust
   #[derive(Debug, Clone, Serialize, Deserialize)]
   pub struct Settings {
@@ -526,17 +526,17 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Set
       pub threshold: f64, // default: 0.9 (90%)
   }
   ```
-- [ ] Implement TOML loading from `~/.config/claude-bar/config.toml`
-- [ ] Implement default settings when config missing
-- [ ] Create `config.example.toml` with all options documented
-- [ ] Implement hot-reload with `notify` crate (inotify)
-- [ ] Add settings validation
+- [x] Implement TOML loading from `~/.config/claude-bar/config.toml`
+- [x] Implement default settings when config missing
+- [x] Create `config.example.toml` with all options documented
+- [x] Implement hot-reload with `notify` crate (inotify)
+- [x] Add settings validation
 
 ### 2.3 Usage Store
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/UsageStore.swift`
 
-- [ ] Create `core/store.rs` with:
+- [x] Create `core/store.rs` with:
   ```rust
   pub struct UsageStore {
       snapshots: HashMap<Provider, UsageSnapshot>,
@@ -558,17 +558,39 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Usa
       pub fn reset_notification(&mut self, provider: Provider);  // Called when usage resets
   }
   ```
-- [ ] Make thread-safe with `Arc<RwLock<...>>`
-- [ ] Add change notification mechanism (channels)
+- [x] Make thread-safe with `Arc<RwLock<...>>`
+- [x] Add change notification mechanism (channels)
 
 ### 2.4 Notifications
 
-- [ ] Create `core/notifications.rs`:
+- [x] Create `core/notifications.rs`:
   ```rust
   pub fn send_high_usage_notification(provider: Provider, percent: f64) -> Result<()>;
   ```
-- [ ] Use `notify-rust` crate
-- [ ] Simple text notification (no actions)
+- [x] Use `notify-rust` crate
+- [x] Simple text notification (no actions)
+
+### Phase 2 Notes
+
+**SettingsWatcher implementation:**
+- Uses `notify` crate with `RecommendedWatcher` for inotify on Linux
+- Watches the parent config directory (non-recursive) to detect both creates and modifies
+- Debounces file changes with a 100ms delay to avoid duplicate events
+- Validates settings before applying changes; keeps old settings if validation fails
+- Provides `broadcast::Receiver<Settings>` for components to subscribe to changes
+- Both async (`get()`) and blocking (`get_blocking()`) accessors available
+
+**UsageStore change notification:**
+- Uses `tokio::sync::broadcast` channel with capacity of 64 messages
+- `StoreUpdate` enum variants: `UsageUpdated`, `CostUpdated`, `ErrorOccurred`, `ErrorCleared`
+- Subscribers receive updates immediately after state changes
+- `ErrorCleared` sent before `UsageUpdated` when a successful fetch clears an error state
+
+**Data models:**
+- All models derive `Serialize` and `Deserialize` for JSON/TOML compatibility
+- `RateWindow` includes helper methods: `remaining_percent()`, `is_high_usage()`
+- `UsageSnapshot::max_usage()` returns the highest usage across all rate windows
+- `CostSnapshot` defaults to USD currency with empty daily breakdown
 
 ---
 
@@ -1239,10 +1261,10 @@ Key files in the original CodexBar implementation to reference:
 - [x] Basic scaffolding compiles
 
 **Phase 2: Core Data Layer**
-- [ ] Data models implemented
-- [ ] Settings store with hot-reload
-- [ ] Usage store working
-- [ ] Notifications working
+- [x] Data models implemented
+- [x] Settings store with hot-reload
+- [x] Usage store working
+- [x] Notifications working
 
 **Phase 3: Provider Implementations**
 - [ ] Provider trait defined

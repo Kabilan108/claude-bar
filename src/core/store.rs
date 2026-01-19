@@ -2,7 +2,15 @@ use crate::core::models::{CostSnapshot, Provider, UsageSnapshot};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
+
+#[derive(Debug, Clone)]
+pub enum StoreUpdate {
+    UsageUpdated(Provider),
+    CostUpdated(Provider),
+    ErrorOccurred(Provider, String),
+    ErrorCleared(Provider),
+}
 
 #[derive(Default)]
 struct StoreInner {
@@ -13,16 +21,23 @@ struct StoreInner {
     notified_90_percent: HashSet<Provider>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct UsageStore {
     inner: Arc<RwLock<StoreInner>>,
+    update_tx: broadcast::Sender<StoreUpdate>,
 }
 
 impl UsageStore {
     pub fn new() -> Self {
+        let (update_tx, _) = broadcast::channel(64);
         Self {
             inner: Arc::new(RwLock::new(StoreInner::default())),
+            update_tx,
         }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<StoreUpdate> {
+        self.update_tx.subscribe()
     }
 
     pub async fn get_snapshot(&self, provider: Provider) -> Option<UsageSnapshot> {
@@ -38,20 +53,32 @@ impl UsageStore {
     }
 
     pub async fn update_snapshot(&self, provider: Provider, snapshot: UsageSnapshot) {
-        let mut inner = self.inner.write().await;
-        inner.snapshots.insert(provider, snapshot);
-        inner.errors.remove(&provider);
-        inner.last_fetch.insert(provider, Instant::now());
+        let had_error = {
+            let mut inner = self.inner.write().await;
+            let had_error = inner.errors.remove(&provider).is_some();
+            inner.snapshots.insert(provider, snapshot);
+            inner.last_fetch.insert(provider, Instant::now());
+            had_error
+        };
+
+        if had_error {
+            let _ = self.update_tx.send(StoreUpdate::ErrorCleared(provider));
+        }
+        let _ = self.update_tx.send(StoreUpdate::UsageUpdated(provider));
     }
 
     pub async fn update_cost(&self, provider: Provider, cost: CostSnapshot) {
         self.inner.write().await.costs.insert(provider, cost);
+        let _ = self.update_tx.send(StoreUpdate::CostUpdated(provider));
     }
 
     pub async fn set_error(&self, provider: Provider, error: String) {
-        let mut inner = self.inner.write().await;
-        inner.errors.insert(provider, error);
-        inner.snapshots.remove(&provider);
+        {
+            let mut inner = self.inner.write().await;
+            inner.errors.insert(provider, error.clone());
+            inner.snapshots.remove(&provider);
+        }
+        let _ = self.update_tx.send(StoreUpdate::ErrorOccurred(provider, error));
     }
 
     pub async fn should_refresh(&self, provider: Provider, cooldown: Duration) -> bool {
@@ -100,6 +127,12 @@ impl UsageStore {
             .iter()
             .map(|(p, s)| (*p, s.clone()))
             .collect()
+    }
+}
+
+impl Default for UsageStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -179,5 +212,55 @@ mod tests {
         store.reset_notification(Provider::Claude).await;
 
         assert!(store.should_notify(Provider::Claude, 0.9).await);
+    }
+
+    #[tokio::test]
+    async fn test_store_subscription_receives_updates() {
+        let store = UsageStore::new();
+        let mut receiver = store.subscribe();
+
+        let snapshot = make_snapshot(0.5);
+        store
+            .update_snapshot(Provider::Claude, snapshot.clone())
+            .await;
+
+        let update = receiver.try_recv().unwrap();
+        assert!(matches!(update, StoreUpdate::UsageUpdated(Provider::Claude)));
+    }
+
+    #[tokio::test]
+    async fn test_store_subscription_receives_errors() {
+        let store = UsageStore::new();
+        let mut receiver = store.subscribe();
+
+        store
+            .set_error(Provider::Codex, "Auth failed".to_string())
+            .await;
+
+        let update = receiver.try_recv().unwrap();
+        assert!(matches!(
+            update,
+            StoreUpdate::ErrorOccurred(Provider::Codex, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_store_subscription_error_cleared_on_success() {
+        let store = UsageStore::new();
+
+        store
+            .set_error(Provider::Claude, "Network error".to_string())
+            .await;
+
+        let mut receiver = store.subscribe();
+
+        let snapshot = make_snapshot(0.3);
+        store.update_snapshot(Provider::Claude, snapshot).await;
+
+        let update = receiver.try_recv().unwrap();
+        assert!(matches!(update, StoreUpdate::ErrorCleared(Provider::Claude)));
+
+        let update = receiver.try_recv().unwrap();
+        assert!(matches!(update, StoreUpdate::UsageUpdated(Provider::Claude)));
     }
 }

@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -127,6 +130,116 @@ impl Settings {
             );
         }
         Ok(())
+    }
+}
+
+pub struct SettingsWatcher {
+    settings: Arc<RwLock<Settings>>,
+    update_tx: broadcast::Sender<Settings>,
+    _watcher: Option<RecommendedWatcher>,
+}
+
+impl SettingsWatcher {
+    pub fn new() -> Result<Self> {
+        let settings = Settings::load()?;
+        settings.validate()?;
+
+        let (update_tx, _) = broadcast::channel(16);
+        let settings = Arc::new(RwLock::new(settings));
+
+        Ok(Self {
+            settings,
+            update_tx,
+            _watcher: None,
+        })
+    }
+
+    pub fn start_watching(&mut self) -> Result<()> {
+        let Some(config_path) = Settings::config_path() else {
+            tracing::warn!("Could not determine config path, hot-reload disabled");
+            return Ok(());
+        };
+
+        if !config_path.exists() {
+            tracing::info!(?config_path, "Config file does not exist, hot-reload waiting");
+            if let Some(parent) = config_path.parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)?;
+                }
+            }
+        }
+
+        let settings_clone = Arc::clone(&self.settings);
+        let update_tx_clone = self.update_tx.clone();
+        let config_path_clone = config_path.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let mut watcher = RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    if event.kind.is_modify() || event.kind.is_create() {
+                        let _ = tx.send(());
+                    }
+                }
+            },
+            Config::default(),
+        )?;
+
+        let watch_path = config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        watcher.watch(watch_path, RecursiveMode::NonRecursive)?;
+
+        tracing::info!(?watch_path, "Started watching config directory");
+
+        tokio::spawn(async move {
+            while rx.recv().is_ok() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                match Settings::load() {
+                    Ok(new_settings) => {
+                        if let Err(e) = new_settings.validate() {
+                            tracing::error!(?e, "Config validation failed, keeping old settings");
+                            continue;
+                        }
+
+                        tracing::info!(?config_path_clone, "Config reloaded");
+
+                        {
+                            let mut current = settings_clone.write().await;
+                            *current = new_settings.clone();
+                        }
+
+                        let _ = update_tx_clone.send(new_settings);
+                    }
+                    Err(e) => {
+                        tracing::error!(?e, "Failed to reload config");
+                    }
+                }
+            }
+        });
+
+        self._watcher = Some(watcher);
+        Ok(())
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Settings> {
+        self.update_tx.subscribe()
+    }
+
+    pub async fn get(&self) -> Settings {
+        self.settings.read().await.clone()
+    }
+
+    pub fn get_blocking(&self) -> Settings {
+        self.settings.blocking_read().clone()
+    }
+}
+
+impl Default for SettingsWatcher {
+    fn default() -> Self {
+        Self::new().expect("Failed to create default SettingsWatcher")
     }
 }
 

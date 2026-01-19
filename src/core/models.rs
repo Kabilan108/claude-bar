@@ -99,6 +99,7 @@ impl Default for CostSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn test_rate_window_remaining() {
@@ -127,5 +128,132 @@ mod tests {
     fn test_provider_names() {
         assert_eq!(Provider::Claude.name(), "Claude Code");
         assert_eq!(Provider::Codex.name(), "Codex");
+    }
+
+    #[test]
+    fn test_provider_serialization_roundtrip() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let json = serde_json::to_string(&provider).unwrap();
+            let deserialized: Provider = serde_json::from_str(&json).unwrap();
+            assert_eq!(provider, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_rate_window_serialization_roundtrip() {
+        let window = RateWindow {
+            used_percent: 0.78,
+            window_minutes: Some(300),
+            resets_at: Some(Utc.with_ymd_and_hms(2026, 1, 18, 15, 30, 0).unwrap()),
+            reset_description: Some("Resets in 2h 14m".to_string()),
+        };
+
+        let json = serde_json::to_string(&window).unwrap();
+        let deserialized: RateWindow = serde_json::from_str(&json).unwrap();
+
+        assert!((deserialized.used_percent - 0.78).abs() < f64::EPSILON);
+        assert_eq!(deserialized.window_minutes, Some(300));
+        assert!(deserialized.resets_at.is_some());
+        assert_eq!(
+            deserialized.reset_description,
+            Some("Resets in 2h 14m".to_string())
+        );
+    }
+
+    #[test]
+    fn test_usage_snapshot_serialization_roundtrip() {
+        let snapshot = UsageSnapshot {
+            primary: Some(RateWindow {
+                used_percent: 0.65,
+                window_minutes: Some(300),
+                resets_at: None,
+                reset_description: None,
+            }),
+            secondary: Some(RateWindow {
+                used_percent: 0.32,
+                window_minutes: Some(10080),
+                resets_at: None,
+                reset_description: Some("Weekly quota".to_string()),
+            }),
+            opus: None,
+            updated_at: Utc::now(),
+            identity: ProviderIdentity {
+                email: Some("user@example.com".to_string()),
+                organization: Some("Acme Corp".to_string()),
+                plan: Some("Pro".to_string()),
+            },
+        };
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let deserialized: UsageSnapshot = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.primary.is_some());
+        assert!(deserialized.secondary.is_some());
+        assert!(deserialized.opus.is_none());
+        assert_eq!(
+            deserialized.identity.email,
+            Some("user@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_cost_snapshot_serialization_roundtrip() {
+        let cost = CostSnapshot {
+            today_cost: 12.45,
+            monthly_cost: 234.56,
+            currency: "USD".to_string(),
+            daily_breakdown: vec![
+                DailyCost {
+                    date: NaiveDate::from_ymd_opt(2026, 1, 18).unwrap(),
+                    model: "claude-3-5-sonnet".to_string(),
+                    cost: 8.50,
+                },
+                DailyCost {
+                    date: NaiveDate::from_ymd_opt(2026, 1, 18).unwrap(),
+                    model: "claude-3-opus".to_string(),
+                    cost: 3.95,
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&cost).unwrap();
+        let deserialized: CostSnapshot = serde_json::from_str(&json).unwrap();
+
+        assert!((deserialized.today_cost - 12.45).abs() < f64::EPSILON);
+        assert!((deserialized.monthly_cost - 234.56).abs() < f64::EPSILON);
+        assert_eq!(deserialized.currency, "USD");
+        assert_eq!(deserialized.daily_breakdown.len(), 2);
+    }
+
+    #[test]
+    fn test_usage_snapshot_max_usage() {
+        let snapshot = UsageSnapshot {
+            primary: Some(RateWindow {
+                used_percent: 0.50,
+                window_minutes: None,
+                resets_at: None,
+                reset_description: None,
+            }),
+            secondary: Some(RateWindow {
+                used_percent: 0.80,
+                window_minutes: None,
+                resets_at: None,
+                reset_description: None,
+            }),
+            opus: Some(RateWindow {
+                used_percent: 0.45,
+                window_minutes: None,
+                resets_at: None,
+                reset_description: None,
+            }),
+            updated_at: Utc::now(),
+            identity: ProviderIdentity {
+                email: None,
+                organization: None,
+                plan: None,
+            },
+        };
+
+        assert!((snapshot.max_usage() - 0.80).abs() < f64::EPSILON);
     }
 }
