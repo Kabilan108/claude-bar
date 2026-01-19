@@ -205,11 +205,11 @@ impl SettingsWatcher {
         self.update_tx.subscribe()
     }
 
-    #[allow(dead_code)]
     pub async fn get(&self) -> Settings {
         self.settings.read().await.clone()
     }
 
+    #[allow(dead_code)]
     pub fn get_blocking(&self) -> Settings {
         self.settings.blocking_read().clone()
     }

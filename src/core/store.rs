@@ -81,6 +81,7 @@ impl UsageStore {
             let mut inner = self.inner.write().await;
             inner.errors.insert(provider, error.clone());
             inner.snapshots.remove(&provider);
+            inner.last_fetch.insert(provider, Instant::now());
         }
         let _ = self.update_tx.send(StoreUpdate::ErrorOccurred(provider, error));
     }

@@ -163,25 +163,15 @@ impl PopupWindow {
     }
 
     fn position_window(&self) {
-        if let Some(display) = gtk4::gdk::Display::default() {
-            if let Some(monitor) = display.monitors().item(0) {
-                if let Some(monitor) = monitor.downcast_ref::<gtk4::gdk::Monitor>() {
-                    let geometry = monitor.geometry();
-                    let margin = 8;
-                    let panel_height = 32;
-
-                    let x = geometry.x() + geometry.width() - POPUP_WIDTH - margin;
-                    let y = geometry.y() + panel_height + margin;
-
-                    if let Some(surface) = self.window.surface() {
-                        if let Some(toplevel) = surface.downcast_ref::<gtk4::gdk::Toplevel>() {
-                            toplevel.set_property("x", x);
-                            toplevel.set_property("y", y);
-                        }
-                    }
-                }
-            }
-        }
+        // On Wayland, window positioning is controlled by the compositor.
+        // We cannot set x/y coordinates directly. The window will appear
+        // where the compositor decides (typically near the cursor or in a
+        // default position). For X11 compatibility, we could use
+        // gtk_window_move but that's deprecated in GTK4.
+        //
+        // For proper tray popup positioning on Wayland, we'd need to use
+        // layer-shell protocols, but that requires additional dependencies.
+        // For now, we just let the compositor handle positioning.
     }
 
     fn rebuild_content(&self) {

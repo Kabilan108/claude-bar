@@ -21,7 +21,7 @@ pub async fn run() -> Result<()> {
     tracing::info!(app_id = APP_ID, "Initializing GTK application");
 
     let settings_watcher = SettingsWatcher::new()?;
-    let settings = settings_watcher.get_blocking();
+    let settings = settings_watcher.get().await;
 
     let store = Arc::new(UsageStore::new());
     let tray_manager = Arc::new(TrayManager::new());
