@@ -1,0 +1,247 @@
+# Claude Bar
+
+A Linux system tray application for monitoring AI coding assistant usage limits, quotas, and costs.
+
+Claude Bar displays real-time usage information for Claude Code and Codex directly in your system tray, with detailed breakdowns available in a popup interface.
+
+## Features
+
+- System tray icons showing usage via two-bar meters (session and weekly quotas)
+- GTK4/libadwaita popup with detailed usage percentages and reset countdowns
+- Cost tracking from local session logs
+- Desktop notifications when usage exceeds configurable thresholds
+- CLI tool for scripting and debugging
+- Hot-reloadable TOML configuration
+
+## Supported Providers
+
+| Provider | Authentication | Usage API | Cost Tracking |
+|----------|----------------|-----------|---------------|
+| Claude Code | OAuth tokens from `~/.claude/.credentials.json` | Anthropic OAuth API | `~/.claude/projects/` logs |
+| Codex | OAuth tokens from `~/.codex/auth.json` | OpenAI ChatGPT API | `~/.codex/sessions/` logs |
+
+## Installation
+
+### Using Nix Flake
+
+Add to your flake inputs:
+
+```nix
+{
+  inputs.claude-bar.url = "github:kabilan/claude-bar";
+}
+```
+
+Then use the Home Manager module:
+
+```nix
+{
+  imports = [ inputs.claude-bar.homeManagerModules.default ];
+
+  services.claude-bar = {
+    enable = true;
+    settings = {
+      providers = {
+        claude.enabled = true;
+        codex.enabled = true;
+        merge_icons = true;
+      };
+      notifications = {
+        enabled = true;
+        threshold = 0.9;
+      };
+    };
+  };
+}
+```
+
+### Building from Source
+
+```bash
+nix develop
+cargo build --release
+```
+
+## Usage
+
+### Daemon
+
+Start the system tray daemon:
+
+```bash
+claude-bar daemon
+```
+
+The daemon will:
+- Display tray icons for enabled providers
+- Poll usage APIs every 60 seconds (with exponential backoff on errors)
+- Show a popup when clicking the tray icon
+- Register a D-Bus interface for external control
+
+### CLI Commands
+
+Check current usage status:
+
+```bash
+claude-bar status
+claude-bar status --json
+claude-bar status --provider claude
+```
+
+View cost summary:
+
+```bash
+claude-bar cost
+claude-bar cost --json
+claude-bar cost --days 7
+```
+
+Trigger a manual refresh:
+
+```bash
+claude-bar refresh
+```
+
+Generate shell completions:
+
+```bash
+claude-bar completions bash > ~/.local/share/bash-completion/completions/claude-bar
+claude-bar completions zsh > ~/.local/share/zsh/site-functions/_claude-bar
+claude-bar completions fish > ~/.config/fish/completions/claude-bar.fish
+```
+
+## Configuration
+
+Configuration is stored at `~/.config/claude-bar/config.toml`. Create from the example:
+
+```bash
+mkdir -p ~/.config/claude-bar
+cp config.example.toml ~/.config/claude-bar/config.toml
+```
+
+### Configuration Options
+
+```toml
+[providers]
+merge_icons = true  # Single merged icon vs separate per-provider icons
+
+[providers.claude]
+enabled = true
+
+[providers.codex]
+enabled = true
+
+[display]
+show_as_remaining = false  # "78% used" vs "22% remaining"
+
+[browser]
+preferred = "firefox"  # Optional: browser for dashboard links (default: xdg-open)
+
+[notifications]
+enabled = true
+threshold = 0.9  # 90% usage triggers notification
+
+debug = false  # Enable verbose logging
+```
+
+The daemon watches the config file and reloads settings automatically on changes.
+
+## Window Manager Integration
+
+### Hyprland
+
+Add window rules for the popup:
+
+```conf
+windowrulev2 = float, class:^(com.github.kabilan.claude-bar)$
+windowrulev2 = move 100%-400 40, class:^(com.github.kabilan.claude-bar)$
+windowrulev2 = pin, class:^(com.github.kabilan.claude-bar)$
+```
+
+### Sway
+
+```conf
+for_window [app_id="com.github.kabilan.claude-bar"] {
+    floating enable
+    move position 100ppt 40px
+    move left 400px
+}
+```
+
+## Architecture
+
+```
+claude-bar daemon
+├── SNI Tray (ksni) - System tray icons with usage meters
+├── GTK Popup (libadwaita) - Detailed usage display
+├── D-Bus Interface (zbus) - External control API
+└── Polling Loop - Background usage/cost fetching
+
+claude-bar CLI
+├── status - Direct API fetch for current usage
+├── cost - Local log scanning for cost data
+└── refresh - D-Bus call to trigger daemon refresh
+```
+
+## Logging
+
+The daemon logs to multiple destinations:
+- Console (stderr) - Human-readable format
+- File (`~/.local/share/claude-bar/claude-bar.log`) - JSONL format
+- journald - Structured logs for systemd integration
+
+Set log level via environment:
+
+```bash
+RUST_LOG=debug claude-bar daemon
+RUST_LOG=claude_bar=trace claude-bar daemon
+```
+
+## Troubleshooting
+
+### "Run `claude` to authenticate"
+
+Claude Bar reads credentials passively and does not refresh tokens. If you see this error:
+
+1. Run `claude` in your terminal to start the Claude CLI
+2. Complete the authentication flow
+3. Claude Bar will automatically detect the new credentials
+
+### "Run `codex` to authenticate"
+
+Similar to Claude, run the `codex` CLI to refresh Codex credentials.
+
+### Tray icon not appearing
+
+Ensure your desktop environment supports StatusNotifierItem (SNI). Most modern DE's do, but you may need:
+- GNOME: Install `gnome-shell-extension-appindicator`
+- Other DEs: Check your system tray settings
+
+### High CPU usage
+
+The daemon checks for refresh conditions every second but only fetches data when needed. If you're seeing high CPU:
+- Check if the daemon is in an error loop (review logs)
+- Ensure your network is stable
+
+## Development
+
+```bash
+# Enter dev environment
+nix develop
+
+# Build
+cargo build
+
+# Run tests
+cargo test -- --test-threads=1
+
+# Run clippy
+cargo clippy
+
+# Watch for changes
+cargo watch -x check
+```
+
+## License
+
+MIT

@@ -1,4 +1,5 @@
 use crate::core::models::Provider;
+use crate::core::retry::RetryState;
 use crate::core::settings::SettingsWatcher;
 use crate::core::store::UsageStore;
 use crate::daemon::dbus::{start_dbus_server, DbusCommand};
@@ -9,12 +10,12 @@ use anyhow::Result;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 
 const APP_ID: &str = "com.github.kabilan.claude-bar";
-const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 
 pub async fn run() -> Result<()> {
@@ -25,6 +26,7 @@ pub async fn run() -> Result<()> {
 
     let store = Arc::new(UsageStore::new());
     let tray_manager = Arc::new(TrayManager::new());
+    let retry_states = Arc::new(RwLock::new(HashMap::<Provider, RetryState>::new()));
 
     let registry = Arc::new(ProviderRegistry::new(&settings));
 
@@ -52,6 +54,7 @@ pub async fn run() -> Result<()> {
         Arc::clone(&registry),
         Arc::clone(&store),
         Arc::clone(&tray_manager),
+        Arc::clone(&retry_states),
         ui_tx.clone(),
     ));
 
@@ -274,22 +277,113 @@ async fn run_polling_loop(
     registry: Arc<ProviderRegistry>,
     store: Arc<UsageStore>,
     tray: Arc<TrayManager>,
+    retry_states: Arc<RwLock<HashMap<Provider, RetryState>>>,
     ui_tx: mpsc::UnboundedSender<UiCommand>,
 ) {
-    let mut interval = tokio::time::interval(POLL_INTERVAL);
-
-    interval.tick().await;
     for provider in [Provider::Claude, Provider::Codex] {
-        refresh_provider(&registry, &store, &tray, &ui_tx, provider).await;
+        retry_states.write().await.insert(provider, RetryState::new());
     }
 
+    for provider in [Provider::Claude, Provider::Codex] {
+        refresh_provider_with_retry(
+            &registry,
+            &store,
+            &tray,
+            &retry_states,
+            &ui_tx,
+            provider,
+        )
+        .await;
+    }
+
+    let mut check_interval = tokio::time::interval(Duration::from_secs(1));
+
     loop {
-        interval.tick().await;
+        check_interval.tick().await;
 
         for provider in [Provider::Claude, Provider::Codex] {
-            if store.should_refresh(provider, REFRESH_COOLDOWN).await {
-                refresh_provider(&registry, &store, &tray, &ui_tx, provider).await;
+            let should_poll = {
+                let states = retry_states.read().await;
+                let state = states.get(&provider).cloned().unwrap_or_default();
+                let delay = state.current_delay();
+                store.should_refresh(provider, delay).await
+            };
+
+            if should_poll {
+                refresh_provider_with_retry(
+                    &registry,
+                    &store,
+                    &tray,
+                    &retry_states,
+                    &ui_tx,
+                    provider,
+                )
+                .await;
             }
+        }
+    }
+}
+
+async fn refresh_provider_with_retry(
+    registry: &Arc<ProviderRegistry>,
+    store: &Arc<UsageStore>,
+    tray: &Arc<TrayManager>,
+    retry_states: &Arc<RwLock<HashMap<Provider, RetryState>>>,
+    ui_tx: &mpsc::UnboundedSender<UiCommand>,
+    provider: Provider,
+) {
+    let result = registry.fetch_provider(provider).await;
+
+    match result {
+        Ok(snapshot) => {
+            {
+                let mut states = retry_states.write().await;
+                if let Some(state) = states.get_mut(&provider) {
+                    if state.is_in_backoff() {
+                        tracing::info!(
+                            ?provider,
+                            failures = state.consecutive_failures(),
+                            "Provider recovered from error state"
+                        );
+                    }
+                    state.record_success();
+                }
+            }
+
+            let primary = snapshot
+                .primary
+                .as_ref()
+                .map(|r| r.used_percent)
+                .unwrap_or(0.0);
+            let secondary = snapshot
+                .secondary
+                .as_ref()
+                .map(|r| r.used_percent)
+                .unwrap_or(0.0);
+            store.update_snapshot(provider, snapshot.clone()).await;
+            tray.update_icon(provider, primary, secondary).await;
+            tray.set_credentials_valid(provider, true).await;
+
+            let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+        }
+        Err(e) => {
+            let (next_delay, failures) = {
+                let mut states = retry_states.write().await;
+                let state = states.entry(provider).or_default();
+                state.record_failure();
+                (state.current_delay(), state.consecutive_failures())
+            };
+
+            let error_msg = e.to_string();
+            tracing::warn!(
+                ?provider,
+                error = %error_msg,
+                consecutive_failures = failures,
+                next_retry_secs = next_delay.as_secs(),
+                "Failed to fetch usage, backing off"
+            );
+            store.set_error(provider, error_msg).await;
+            tray.set_error(provider).await;
         }
     }
 }

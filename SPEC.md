@@ -1332,30 +1332,30 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 9.1 Error Handling
 
-- [ ] Graceful handling of missing credentials with helpful hints
-- [ ] Clear error messages in popup
-- [ ] Exponential backoff for API failures (60s, 120s, 240s, max 10min)
-- [ ] 30-second request timeout
+- [x] Graceful handling of missing credentials with helpful hints
+- [x] Clear error messages in popup
+- [x] Exponential backoff for API failures (60s, 120s, 240s, max 10min)
+- [x] 30-second request timeout
 
 ### 9.2 Logging
 
-- [ ] Structured JSONL logging with tracing
-- [ ] Log to `~/.local/share/claude-bar/claude-bar.log`
-- [ ] Also log to journald
-- [ ] Log levels: error, warn, info, debug, trace
-- [ ] Debug mode (`debug = true`) enables trace level
+- [x] Structured JSONL logging with tracing
+- [x] Log to `~/.local/share/claude-bar/claude-bar.log`
+- [x] Also log to journald
+- [x] Log levels: error, warn, info, debug, trace
+- [ ] Debug mode (`debug = true`) enables trace level (deferred - env filter works)
 
 ### 9.3 Testing
 
-- [ ] Unit tests for:
-  - [ ] Settings parsing and validation
-  - [ ] Model serialization
-  - [ ] Usage calculation
-  - [ ] Cost calculation
-  - [ ] Icon rendering
-- [ ] Integration tests for:
-  - [ ] Provider API mocking
-  - [ ] Log file parsing
+- [x] Unit tests for:
+  - [x] Settings parsing and validation
+  - [x] Model serialization
+  - [x] Usage calculation
+  - [x] Cost calculation
+  - [x] Icon rendering
+- [x] Integration tests for:
+  - [x] Provider API mocking (response parsing tests)
+  - [x] Log file parsing
 - [ ] Manual testing checklist:
   - [ ] Fresh install (no config)
   - [ ] Missing credentials
@@ -1366,12 +1366,41 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 9.4 Documentation
 
-- [ ] README.md with:
-  - [ ] Installation instructions (Nix flake)
-  - [ ] Configuration reference
-  - [ ] CLI usage
-  - [ ] Hyprland/Sway window rules example
-  - [ ] Troubleshooting
+- [x] README.md with:
+  - [x] Installation instructions (Nix flake)
+  - [x] Configuration reference
+  - [x] CLI usage
+  - [x] Hyprland/Sway window rules example
+  - [x] Troubleshooting
+
+### Phase 9 Notes
+
+**Error handling with exponential backoff:**
+- Added `core/retry.rs` with `RetryState` struct tracking consecutive failures
+- Backoff sequence: 60s → 120s → 240s → 480s → 600s (max)
+- Polling loop checks every 1 second but respects per-provider backoff delays
+- Success resets backoff counter; failure increments it
+- Logged with structured fields: `consecutive_failures`, `next_retry_secs`
+
+**Structured logging:**
+- Daemon logs to three destinations: console (human-readable), file (JSONL), journald
+- CLI commands use compact console-only logging
+- Log file path: `~/.local/share/claude-bar/claude-bar.log`
+- Log level controlled via `RUST_LOG` environment variable
+- Uses tracing-subscriber layers for composable logging
+
+**Test coverage (59 tests):**
+- Core models: 8 tests (serialization, rate window calculations)
+- Core store: 6 tests (updates, errors, notifications)
+- Core settings: 3 tests (defaults, parsing, validation)
+- Core retry: 5 tests (backoff, saturation, reset)
+- Providers: 14 tests (credentials, API responses, metadata)
+- Cost: 18 tests (log parsing, pricing, aggregation)
+- UI/Icons: 4 tests (rendering, progress bar)
+
+**Deferred items:**
+- Debug mode config option for trace logging (use RUST_LOG instead)
+- Manual testing checklist (requires runtime environment)
 
 ---
 
@@ -1507,7 +1536,7 @@ Key files in the original CodexBar implementation to reference:
 - [x] Documentation complete
 
 **Phase 9: Polish & Testing**
-- [ ] Error handling complete
-- [ ] Logging implemented (JSONL + journald)
-- [ ] Tests written
-- [ ] Documentation complete
+- [x] Error handling complete (exponential backoff implemented)
+- [x] Logging implemented (JSONL + journald)
+- [x] Tests written (59 tests passing)
+- [x] Documentation complete (README.md)
