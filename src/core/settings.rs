@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub providers: ProviderSettings,
@@ -13,18 +13,6 @@ pub struct Settings {
     pub browser: BrowserSettings,
     pub notifications: NotificationSettings,
     pub debug: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            providers: ProviderSettings::default(),
-            display: DisplaySettings::default(),
-            browser: BrowserSettings::default(),
-            notifications: NotificationSettings::default(),
-            debug: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,30 +45,16 @@ impl Default for ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplaySettings {
     pub show_as_remaining: bool,
 }
 
-impl Default for DisplaySettings {
-    fn default() -> Self {
-        Self {
-            show_as_remaining: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BrowserSettings {
     pub preferred: Option<String>,
-}
-
-impl Default for BrowserSettings {
-    fn default() -> Self {
-        Self { preferred: None }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

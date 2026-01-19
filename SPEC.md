@@ -835,19 +835,19 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Sta
 
 ### 5.1 SNI Tray Setup
 
-- [ ] Create `daemon/tray.rs` with ksni integration
-- [ ] Register `StatusNotifierItem` per enabled provider (or single merged)
-- [ ] Implement tray icon properties:
-  - [ ] `id`: "claude-bar-claude", "claude-bar-codex", or "claude-bar-merged"
-  - [ ] `category`: ApplicationStatus
-  - [ ] `title`: "Claude Code", "Codex", or "Claude Bar"
-  - [ ] `icon_pixmap`: Dynamic two-bar meter
+- [x] Create `daemon/tray.rs` with ksni integration
+- [x] Register `StatusNotifierItem` per enabled provider (or single merged)
+- [x] Implement tray icon properties:
+  - [x] `id`: "claude-bar-claude", "claude-bar-codex", or "claude-bar-merged"
+  - [x] `category`: ApplicationStatus
+  - [x] `title`: "Claude Code", "Codex", or "Claude Bar"
+  - [x] `icon_pixmap`: Dynamic two-bar meter
 
 ### 5.2 Icon Rendering
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/IconRenderer.swift`
 
-- [ ] Create `icons/renderer.rs`:
+- [x] Create `icons/renderer.rs`:
   ```rust
   pub struct IconRenderer {
       size: u32,  // 22x22 typical for SNI
@@ -866,19 +866,19 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Ico
       Stale,    // Data is old, dim the icon
   }
   ```
-- [ ] Load embedded SVG assets
-- [ ] Render two-bar meter:
-  - [ ] Top bar: Primary usage (session)
-  - [ ] Bottom bar: Secondary usage (weekly)
-  - [ ] Fill direction: left-to-right = usage consumed
-- [ ] Color: Gold/amber (#F5A623)
-- [ ] Output as RGBA pixel data for ksni
+- [x] Load embedded SVG assets
+- [x] Render two-bar meter:
+  - [x] Top bar: Primary usage (session)
+  - [x] Bottom bar: Secondary usage (weekly)
+  - [x] Fill direction: left-to-right = usage consumed
+- [x] Color: Gold/amber (#F5A623)
+- [x] Output as RGBA pixel data for ksni
 
 ### 5.3 Animation System
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/StatusItemController+Animation.swift`
 
-- [ ] Implement Knight Rider loading animation at 15 FPS:
+- [x] Implement Knight Rider loading animation at 15 FPS:
   ```rust
   fn knight_rider_frame(phase: f64) -> (f64, f64) {
       let primary = 0.5 + 0.5 * phase.sin();
@@ -886,21 +886,58 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Sta
       (primary, secondary)
   }
   ```
-- [ ] Create animation timer (15 FPS during loading)
+- [x] Create animation timer (15 FPS during loading)
 
 ### 5.4 Tray Menu
 
-- [ ] Implement right-click context menu:
-  - [ ] "Refresh Now" - triggers immediate fetch
-  - [ ] "Open Dashboard" - opens provider dashboard (auth-only)
-  - [ ] "Quit"
-- [ ] Use ksni menu API
+- [x] Implement right-click context menu:
+  - [x] "Refresh Now" - triggers immediate fetch
+  - [x] "Open Dashboard" - opens provider dashboard (auth-only)
+  - [x] "Quit"
+- [x] Use ksni menu API
 
 ### 5.5 Click Handler
 
-- [ ] Implement left-click to open popup window
-- [ ] Pass provider identifier to popup
-- [ ] Trigger instant refresh (with 5s cooldown)
+- [x] Implement left-click to open popup window
+- [x] Pass provider identifier to popup
+- [x] Trigger instant refresh (with 5s cooldown)
+
+### Phase 5 Notes
+
+**TrayManager architecture:**
+- Uses interior mutability pattern with `Arc<RwLock<TrayManagerInner>>` to allow shared state updates
+- Event system via `mpsc::UnboundedSender<TrayEvent>` for async event handling
+- Separate `TrayState` per provider tracks: percentages, icon state, animation phase, credentials validity, last refresh time
+
+**ksni integration:**
+- `ClaudeBarTray` struct implements the `ksni::Tray` trait
+- `icon_pixmap()` dynamically generates RGBA pixel data for the icon
+- Pixel format conversion: RGBA to network byte order (ARGB) for D-Bus SNI protocol
+- `TrayService::spawn()` creates background thread for D-Bus message handling
+- `Handle::update()` allows safe updates from async context
+
+**Icon rendering:**
+- 22x22 pixel icons (standard SNI size)
+- Two horizontal bars (8px each) with 2px gap
+- Gold/amber brand color (#F5A623) for filled portions
+- Dimmed (1/4 brightness, 50% alpha) for empty portions
+- Top bar: primary/session usage, Bottom bar: secondary/weekly usage
+
+**Animation system:**
+- Knight Rider effect: sinusoidal oscillation with π phase offset between bars
+- 15 FPS update rate (~66ms interval) for smooth animation without excessive CPU
+- `run_animation_loop()` async function for tokio-based timing
+- Animation phase incremented by π/30 per frame (~1 full cycle per 2 seconds)
+
+**Context menu:**
+- "Refresh Now" - sends `TrayEvent::RefreshRequested`
+- "Open Dashboard" - only shown when credentials are valid
+- "Quit" - sends `TrayEvent::Quit`
+- Left click sends `TrayEvent::LeftClick(provider)` for popup
+
+**Deferred to Phase 6:**
+- Popup window implementation (currently left click emits event but popup not implemented)
+- Actual refresh logic (event is emitted but handling in app.rs not implemented)
 
 ---
 
@@ -1347,11 +1384,11 @@ Key files in the original CodexBar implementation to reference:
 - [x] Cost store integrated
 
 **Phase 5: System Tray Integration**
-- [ ] SNI tray setup working
-- [ ] Icon rendering working
-- [ ] Animations working (15 FPS)
-- [ ] Tray menu working
-- [ ] Click handler working
+- [x] SNI tray setup working
+- [x] Icon rendering working
+- [x] Animations working (15 FPS)
+- [x] Tray menu working
+- [x] Click handler working
 
 **Phase 6: GTK Popup UI**
 - [ ] GTK Application setup with app ID

@@ -79,6 +79,7 @@ impl IconRenderer {
         pixels
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_bar(
         &self,
         pixels: &mut [u8],

@@ -1,9 +1,11 @@
 mod app;
 mod dbus;
 mod polling;
-mod tray;
+pub mod tray;
 
 use anyhow::Result;
+
+pub use tray::{run_animation_loop, TrayEvent, TrayManager};
 
 pub async fn run() -> Result<()> {
     tracing::info!("Starting claude-bar daemon");

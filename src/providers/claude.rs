@@ -82,9 +82,8 @@ impl ClaudeProvider {
         resets_at.and_then(|s| {
             DateTime::parse_from_rfc3339(s)
                 .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
+                .inspect_err(|e| {
                     warn!("Failed to parse reset time '{}': {}", s, e);
-                    e
                 })
                 .ok()
         })

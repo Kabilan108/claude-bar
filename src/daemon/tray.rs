@@ -1,29 +1,400 @@
 use crate::core::models::Provider;
+use crate::core::settings::Settings;
+use crate::core::store::UsageStore;
+use crate::icons::{IconRenderer, IconState};
+use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, RwLock};
+
+const ICON_SIZE: i32 = 22;
+const ANIMATION_FPS: u64 = 15;
+const ANIMATION_INTERVAL: Duration = Duration::from_millis(1000 / ANIMATION_FPS);
+const REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TrayEvent {
+    LeftClick(Provider),
+    RefreshRequested,
+    OpenDashboard(Provider),
+    Quit,
+}
+
+struct ClaudeBarTray {
+    provider: Provider,
+    primary_percent: f64,
+    secondary_percent: f64,
+    state: IconState,
+    animation_phase: f64,
+    has_credentials: bool,
+    event_tx: mpsc::UnboundedSender<TrayEvent>,
+}
+
+impl Tray for ClaudeBarTray {
+    fn id(&self) -> String {
+        match self.provider {
+            Provider::Claude => "claude-bar-claude".to_string(),
+            Provider::Codex => "claude-bar-codex".to_string(),
+        }
+    }
+
+    fn category(&self) -> ksni::Category {
+        ksni::Category::ApplicationStatus
+    }
+
+    fn title(&self) -> String {
+        self.provider.name().to_string()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        let renderer = IconRenderer::new();
+
+        let (primary, secondary) = if self.state == IconState::Loading {
+            IconRenderer::knight_rider_frame(self.animation_phase)
+        } else {
+            (self.primary_percent, self.secondary_percent)
+        };
+
+        let pixels = renderer.render(self.provider, primary, secondary, self.state);
+
+        vec![ksni::Icon {
+            width: ICON_SIZE,
+            height: ICON_SIZE,
+            data: argb_to_network_order(&pixels, ICON_SIZE as usize),
+        }]
+    }
+
+    fn tool_tip(&self) -> ksni::ToolTip {
+        let title = self.provider.name().to_string();
+        let description = match self.state {
+            IconState::Loading => "Loading...".to_string(),
+            IconState::Error => "Authentication required".to_string(),
+            IconState::Stale => format!(
+                "Session: {:.0}% used | Weekly: {:.0}% used (stale data)",
+                self.primary_percent * 100.0,
+                self.secondary_percent * 100.0
+            ),
+            IconState::Normal => format!(
+                "Session: {:.0}% used | Weekly: {:.0}% used",
+                self.primary_percent * 100.0,
+                self.secondary_percent * 100.0
+            ),
+        };
+
+        ksni::ToolTip {
+            title,
+            description,
+            icon_name: String::new(),
+            icon_pixmap: Vec::new(),
+        }
+    }
+
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        let mut items = vec![MenuItem::Standard(StandardItem {
+            label: "Refresh Now".to_string(),
+            activate: Box::new(|tray: &mut Self| {
+                let _ = tray.event_tx.send(TrayEvent::RefreshRequested);
+            }),
+            ..Default::default()
+        })];
+
+        if self.has_credentials {
+            items.push(MenuItem::Standard(StandardItem {
+                label: format!("Open {} Dashboard", self.provider.name()),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.event_tx.send(TrayEvent::OpenDashboard(tray.provider));
+                }),
+                ..Default::default()
+            }));
+        }
+
+        items.push(MenuItem::Separator);
+
+        items.push(MenuItem::Standard(StandardItem {
+            label: "Quit".to_string(),
+            activate: Box::new(|tray: &mut Self| {
+                let _ = tray.event_tx.send(TrayEvent::Quit);
+            }),
+            ..Default::default()
+        }));
+
+        items
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.event_tx.send(TrayEvent::LeftClick(self.provider));
+    }
+}
+
+fn argb_to_network_order(rgba: &[u8], size: usize) -> Vec<u8> {
+    let mut argb = Vec::with_capacity(size * size * 4);
+    for chunk in rgba.chunks_exact(4) {
+        let r = chunk[0];
+        let g = chunk[1];
+        let b = chunk[2];
+        let a = chunk[3];
+        argb.push(a);
+        argb.push(r);
+        argb.push(g);
+        argb.push(b);
+    }
+    argb
+}
+
+struct TrayState {
+    primary_percent: f64,
+    secondary_percent: f64,
+    state: IconState,
+    animation_phase: f64,
+    has_credentials: bool,
+    last_refresh: Instant,
+    handle: Option<ksni::Handle<ClaudeBarTray>>,
+}
+
+impl Default for TrayState {
+    fn default() -> Self {
+        Self {
+            primary_percent: 0.0,
+            secondary_percent: 0.0,
+            state: IconState::Loading,
+            animation_phase: 0.0,
+            has_credentials: false,
+            last_refresh: Instant::now() - REFRESH_COOLDOWN,
+            handle: None,
+        }
+    }
+}
+
+struct TrayManagerInner {
+    states: std::collections::HashMap<Provider, TrayState>,
+    merged_mode: bool,
+}
+
+impl Default for TrayManagerInner {
+    fn default() -> Self {
+        Self {
+            states: std::collections::HashMap::new(),
+            merged_mode: true,
+        }
+    }
+}
 
 pub struct TrayManager {
-    // TODO: ksni StatusNotifierItem instances
+    inner: Arc<RwLock<TrayManagerInner>>,
+    event_tx: mpsc::UnboundedSender<TrayEvent>,
+    event_rx: Arc<RwLock<Option<mpsc::UnboundedReceiver<TrayEvent>>>>,
 }
 
 impl TrayManager {
     pub fn new() -> Self {
-        Self {}
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        Self {
+            inner: Arc::new(RwLock::new(TrayManagerInner::default())),
+            event_tx,
+            event_rx: Arc::new(RwLock::new(Some(event_rx))),
+        }
     }
 
-    pub fn update_icon(&mut self, _provider: Provider, _primary: f64, _secondary: f64) {
-        // TODO: Update tray icon with new usage percentages
+    pub async fn take_event_receiver(&self) -> Option<mpsc::UnboundedReceiver<TrayEvent>> {
+        self.event_rx.write().await.take()
     }
 
-    pub fn set_loading(&mut self, _provider: Provider) {
-        // TODO: Show Knight Rider loading animation
+    pub async fn start(&self, settings: &Settings, _store: &UsageStore) -> anyhow::Result<()> {
+        let mut inner = self.inner.write().await;
+        inner.merged_mode = settings.providers.merge_icons;
+
+        let providers_to_show = if inner.merged_mode {
+            vec![Provider::Claude]
+        } else {
+            let mut providers = Vec::new();
+            if settings.providers.claude.enabled {
+                providers.push(Provider::Claude);
+            }
+            if settings.providers.codex.enabled {
+                providers.push(Provider::Codex);
+            }
+            if providers.is_empty() {
+                providers.push(Provider::Claude);
+            }
+            providers
+        };
+
+        for provider in providers_to_show {
+            let tray = ClaudeBarTray {
+                provider,
+                primary_percent: 0.0,
+                secondary_percent: 0.0,
+                state: IconState::Loading,
+                animation_phase: 0.0,
+                has_credentials: false,
+                event_tx: self.event_tx.clone(),
+            };
+
+            let service = TrayService::new(tray);
+            let handle = service.handle();
+            service.spawn();
+
+            inner.states.insert(
+                provider,
+                TrayState {
+                    handle: Some(handle),
+                    ..Default::default()
+                },
+            );
+
+            tracing::info!(provider = ?provider, "Tray icon registered");
+        }
+
+        Ok(())
     }
 
-    pub fn set_error(&mut self, _provider: Provider) {
-        // TODO: Show error state (grayed icon)
+    pub async fn update_icon(&self, provider: Provider, primary: f64, secondary: f64) {
+        let mut inner = self.inner.write().await;
+        if let Some(state) = inner.states.get_mut(&provider) {
+            state.primary_percent = primary;
+            state.secondary_percent = secondary;
+            state.state = IconState::Normal;
+
+            if let Some(handle) = &state.handle {
+                let p = primary;
+                let s = secondary;
+                handle.update(move |tray| {
+                    tray.primary_percent = p;
+                    tray.secondary_percent = s;
+                    tray.state = IconState::Normal;
+                });
+            }
+        }
+    }
+
+    pub async fn set_loading(&self, provider: Provider) {
+        let mut inner = self.inner.write().await;
+        if let Some(state) = inner.states.get_mut(&provider) {
+            state.state = IconState::Loading;
+            state.animation_phase = 0.0;
+
+            if let Some(handle) = &state.handle {
+                handle.update(|tray| {
+                    tray.state = IconState::Loading;
+                    tray.animation_phase = 0.0;
+                });
+            }
+        }
+    }
+
+    pub async fn set_error(&self, provider: Provider) {
+        let mut inner = self.inner.write().await;
+        if let Some(state) = inner.states.get_mut(&provider) {
+            state.state = IconState::Error;
+            state.has_credentials = false;
+
+            if let Some(handle) = &state.handle {
+                handle.update(|tray| {
+                    tray.state = IconState::Error;
+                    tray.has_credentials = false;
+                });
+            }
+        }
+    }
+
+    pub async fn set_stale(&self, provider: Provider) {
+        let mut inner = self.inner.write().await;
+        if let Some(state) = inner.states.get_mut(&provider) {
+            state.state = IconState::Stale;
+
+            if let Some(handle) = &state.handle {
+                handle.update(|tray| {
+                    tray.state = IconState::Stale;
+                });
+            }
+        }
+    }
+
+    pub async fn set_credentials_valid(&self, provider: Provider, valid: bool) {
+        let mut inner = self.inner.write().await;
+        if let Some(state) = inner.states.get_mut(&provider) {
+            state.has_credentials = valid;
+
+            if let Some(handle) = &state.handle {
+                handle.update(move |tray| {
+                    tray.has_credentials = valid;
+                });
+            }
+        }
+    }
+
+    pub async fn tick_animation(&self) {
+        let mut inner = self.inner.write().await;
+        for state in inner.states.values_mut() {
+            if state.state == IconState::Loading {
+                state.animation_phase += std::f64::consts::PI / 30.0;
+
+                if let Some(handle) = &state.handle {
+                    let phase = state.animation_phase;
+                    handle.update(move |tray| {
+                        tray.animation_phase = phase;
+                    });
+                }
+            }
+        }
+    }
+
+    pub async fn should_refresh(&self, provider: Provider) -> bool {
+        let inner = self.inner.read().await;
+        inner
+            .states
+            .get(&provider)
+            .map(|s| s.last_refresh.elapsed() >= REFRESH_COOLDOWN)
+            .unwrap_or(true)
+    }
+
+    pub async fn mark_refreshed(&self, provider: Provider) {
+        let mut inner = self.inner.write().await;
+        if let Some(state) = inner.states.get_mut(&provider) {
+            state.last_refresh = Instant::now();
+        }
+    }
+
+    pub async fn is_merged_mode(&self) -> bool {
+        self.inner.read().await.merged_mode
+    }
+
+    pub async fn shutdown(&self) {
+        let mut inner = self.inner.write().await;
+        inner.states.clear();
+        tracing::info!("Tray icons shut down");
     }
 }
 
 impl Default for TrayManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub async fn run_animation_loop(tray_manager: Arc<TrayManager>) {
+    let mut interval = tokio::time::interval(ANIMATION_INTERVAL);
+
+    loop {
+        interval.tick().await;
+        tray_manager.tick_animation().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_argb_conversion() {
+        let rgba = vec![255, 128, 64, 200];
+        let argb = argb_to_network_order(&rgba, 1);
+        assert_eq!(argb, vec![200, 255, 128, 64]);
+    }
+
+    #[tokio::test]
+    async fn test_tray_manager_creation() {
+        let manager = TrayManager::new();
+        assert!(manager.is_merged_mode().await);
     }
 }
