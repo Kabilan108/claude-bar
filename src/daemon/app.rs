@@ -1,6 +1,7 @@
 use crate::core::models::Provider;
 use crate::core::settings::SettingsWatcher;
 use crate::core::store::UsageStore;
+use crate::daemon::dbus::{start_dbus_server, DbusCommand};
 use crate::daemon::tray::{run_animation_loop, TrayEvent, TrayManager};
 use crate::providers::ProviderRegistry;
 use crate::ui::PopupWindow;
@@ -36,6 +37,17 @@ pub async fn run() -> Result<()> {
 
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
 
+    let (dbus_cmd_tx, dbus_cmd_rx) = mpsc::unbounded_channel::<DbusCommand>();
+    let _dbus_connection = start_dbus_server(dbus_cmd_tx).await?;
+
+    tokio::spawn(handle_dbus_commands(
+        dbus_cmd_rx,
+        Arc::clone(&registry),
+        Arc::clone(&store),
+        Arc::clone(&tray_manager),
+        ui_tx.clone(),
+    ));
+
     tokio::spawn(run_polling_loop(
         Arc::clone(&registry),
         Arc::clone(&store),
@@ -64,6 +76,26 @@ pub async fn run() -> Result<()> {
     }
 
     run_gtk_main_loop(ui_rx).await
+}
+
+async fn handle_dbus_commands(
+    mut cmd_rx: mpsc::UnboundedReceiver<DbusCommand>,
+    registry: Arc<ProviderRegistry>,
+    store: Arc<UsageStore>,
+    tray: Arc<TrayManager>,
+    ui_tx: mpsc::UnboundedSender<UiCommand>,
+) {
+    while let Some(cmd) = cmd_rx.recv().await {
+        match cmd {
+            DbusCommand::Refresh => {
+                tracing::info!("D-Bus refresh command received");
+                for provider in [Provider::Claude, Provider::Codex] {
+                    tray.set_loading(provider).await;
+                    refresh_provider(&registry, &store, &tray, &ui_tx, provider).await;
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

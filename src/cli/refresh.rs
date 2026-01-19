@@ -1,19 +1,16 @@
+use crate::daemon::{DBUS_NAME, DBUS_PATH};
 use anyhow::{Context, Result};
 
 pub async fn run() -> Result<()> {
-    tracing::info!("Triggering daemon refresh via D-Bus");
-
-    // TODO: Implement D-Bus call to running daemon
     let connection = zbus::Connection::session()
         .await
         .context("Failed to connect to session D-Bus")?;
 
-    // Check if daemon is running by trying to call the refresh method
     let _reply: () = connection
         .call_method(
-            Some("com.github.kabilan.ClaudeBar"),
-            "/com/github/kabilan/ClaudeBar",
-            Some("com.github.kabilan.ClaudeBar"),
+            Some(DBUS_NAME),
+            DBUS_PATH,
+            Some(DBUS_NAME),
             "Refresh",
             &(),
         )

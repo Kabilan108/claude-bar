@@ -1060,7 +1060,7 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 7.1 CLI Structure
 
-- [ ] Create CLI with clap in `main.rs`:
+- [x] Create CLI with clap in `main.rs`:
   ```
   claude-bar
 
@@ -1077,20 +1077,20 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 7.2 Daemon Command
 
-- [ ] `claude-bar daemon`:
-  - [ ] Start GTK application
-  - [ ] Initialize tray
-  - [ ] Start polling loop
-  - [ ] Register D-Bus interface
+- [x] `claude-bar daemon`:
+  - [x] Start GTK application
+  - [x] Initialize tray
+  - [x] Start polling loop
+  - [x] Register D-Bus interface
 
 ### 7.3 Status Command
 
-- [ ] `claude-bar status`:
-  - [ ] Fetch directly from provider APIs (standalone)
-  - [ ] Text format by default
-  - [ ] `--json` flag for JSON output
-  - [ ] `--provider <name>` to filter
-- [ ] Example output:
+- [x] `claude-bar status`:
+  - [x] Fetch directly from provider APIs (standalone)
+  - [x] Text format by default
+  - [x] `--json` flag for JSON output
+  - [x] `--provider <name>` to filter
+- [x] Example output:
   ```
   Claude Code
     Session: 78% used (resets in 2h 14m)
@@ -1104,11 +1104,11 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 7.4 Cost Command
 
-- [ ] `claude-bar cost`:
-  - [ ] Scan local logs (standalone)
-  - [ ] `--json` flag for JSON output
-  - [ ] `--days <n>` to specify range (default 30)
-- [ ] Example output:
+- [x] `claude-bar cost`:
+  - [x] Scan local logs (standalone)
+  - [x] `--json` flag for JSON output
+  - [x] `--days <n>` to specify range (default 30)
+- [x] Example output:
   ```
   Claude Code
     Today:      $12.45
@@ -1121,15 +1121,15 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 7.5 Refresh Command
 
-- [ ] `claude-bar refresh`:
-  - [ ] Connect to daemon via D-Bus
-  - [ ] Call Refresh method
-  - [ ] Report success/failure
-  - [ ] Exit with error if daemon not running
+- [x] `claude-bar refresh`:
+  - [x] Connect to daemon via D-Bus
+  - [x] Call Refresh method
+  - [x] Report success/failure
+  - [x] Exit with error if daemon not running
 
 ### 7.6 D-Bus Interface
 
-- [ ] Create `daemon/dbus.rs`:
+- [x] Create `daemon/dbus.rs`:
   ```rust
   #[dbus_interface(name = "com.github.kabilan.ClaudeBar")]
   impl ClaudeBarService {
@@ -1140,8 +1140,44 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
       fn usage_updated(&self, provider: &str) -> Result<(), Error>;
   }
   ```
-- [ ] Follow freedesktop patterns
-- [ ] Register on session bus
+- [x] Follow freedesktop patterns
+- [x] Register on session bus
+
+### Phase 7 Notes
+
+**CLI architecture:**
+- Single binary with clap subcommands: `daemon`, `status`, `cost`, `refresh`, `completions`
+- `completions` command added for generating shell completions (bash, zsh, fish)
+- CLI commands are standalone (don't require daemon) except for `refresh` which calls daemon via D-Bus
+
+**Status command:**
+- Directly instantiates providers and fetches usage from APIs
+- Respects `providers.claude.enabled` and `providers.codex.enabled` settings
+- `--provider` filter accepts case-insensitive provider names ("claude", "codex")
+- JSON output includes `fetched_at` timestamp with all provider status data
+- Text output formats percentages to one decimal place with reset time info
+
+**Cost command:**
+- Uses `CostStore` to scan JSONL logs and calculate costs
+- Refreshes pricing from models.dev before scanning (with cache)
+- Shows daily summary for recent days if there's data for multiple days
+- JSON output includes full `daily_breakdown` per model
+
+**Refresh command:**
+- Uses D-Bus constants from `daemon::dbus` module for consistency
+- Simple method call to `com.github.kabilan.ClaudeBar.Refresh`
+- Error message includes hint about daemon not running
+
+**D-Bus integration:**
+- `ClaudeBarService` uses `mpsc::UnboundedSender<DbusCommand>` to communicate with daemon
+- `DbusCommand::Refresh` triggers refresh for all providers
+- `is_refreshing` property uses `AtomicBool` for thread-safe status
+- Connection builder pattern registers name and serves at path in one chain
+- Daemon handles D-Bus commands in a separate tokio task
+
+**Deferred items:**
+- Per-file cost caching (deferred from Phase 4)
+- Polling loop integration with cost scanning (costs fetched on demand, not polled)
 
 ---
 
@@ -1437,11 +1473,11 @@ Key files in the original CodexBar implementation to reference:
 - [x] Error states with hints
 
 **Phase 7: CLI Tool**
-- [ ] Subcommand structure implemented
-- [ ] `daemon` command working
-- [ ] `status` command working
-- [ ] `cost` command working
-- [ ] `refresh` command (D-Bus) working
+- [x] Subcommand structure implemented
+- [x] `daemon` command working
+- [x] `status` command working
+- [x] `cost` command working
+- [x] `refresh` command (D-Bus) working
 
 **Phase 8: Nix Integration**
 - [ ] Home Manager module created
