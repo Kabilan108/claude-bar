@@ -32,6 +32,18 @@ Add to your flake inputs:
 }
 ```
 
+Apply the overlay to make `pkgs.claude-bar` available. In your NixOS configuration or home-manager setup:
+
+```nix
+# In your NixOS configuration (configuration.nix or flake)
+nixpkgs.overlays = [ inputs.claude-bar.overlays.default ];
+
+# Or if using home-manager standalone
+home-manager.users.<username> = {
+  nixpkgs.overlays = [ inputs.claude-bar.overlays.default ];
+};
+```
+
 Then use the Home Manager module:
 
 ```nix
@@ -53,6 +65,18 @@ Then use the Home Manager module:
     };
   };
 }
+```
+
+#### Alternative: Explicit Package
+
+If you prefer not to use the overlay, you can pass the package explicitly (requires `inputs` in your module's arguments via `extraSpecialArgs`):
+
+```nix
+services.claude-bar = {
+  enable = true;
+  package = inputs.claude-bar.packages.${pkgs.system}.default;
+  # ... settings
+};
 ```
 
 ### Building from Source

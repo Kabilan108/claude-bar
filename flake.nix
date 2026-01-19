@@ -97,5 +97,9 @@
 
       nixosModules.default = import ./nix/nixos-module.nix;
       nixosModules.claude-bar = import ./nix/nixos-module.nix;
+
+      overlays.default = final: prev: {
+        claude-bar = self.packages.${final.system}.claude-bar;
+      };
     };
 }
