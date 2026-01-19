@@ -1185,7 +1185,7 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 8.1 Home Manager Module
 
-- [ ] Create `nix/hm-module.nix`:
+- [x] Create `nix/hm-module.nix`:
   ```nix
   { config, lib, pkgs, ... }:
 
@@ -1239,7 +1239,7 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 8.2 NixOS Module
 
-- [ ] Create `nix/nixos-module.nix`:
+- [x] Create `nix/nixos-module.nix`:
   ```nix
   { config, lib, pkgs, ... }:
 
@@ -1266,7 +1266,7 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 8.3 Example Configuration
 
-- [ ] Document usage in README:
+- [x] Document usage in README:
   ```nix
   # In home.nix
   services.claude-bar = {
@@ -1291,7 +1291,7 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
 
 ### 8.4 Flake Outputs
 
-- [ ] Add modules to flake outputs:
+- [x] Add modules to flake outputs:
   ```nix
   outputs = { self, nixpkgs, ... }: {
     packages.x86_64-linux.default = ...;  # claude-bar package
@@ -1303,7 +1303,28 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCLI/
     nixosModules.claude-bar = self.nixosModules.default;
   };
   ```
-- [ ] Include shell completions in package
+- [x] Include shell completions in package
+
+### Phase 8 Notes
+
+**Home Manager module enhancements:**
+- Added `literalExpression` for `defaultText` and `example` to improve documentation
+- Config file only generated when `settings != {}` to avoid empty file creation
+- systemd service uses `Type = "simple"` and `RestartSec = 5` for better restart behavior
+- Auto-starts with graphical session via `WantedBy = [ "graphical-session.target" ]`
+
+**NixOS module:**
+- Minimal system-level module that just installs the package to `environment.systemPackages`
+- User-level configuration should use the Home Manager module
+
+**Flake outputs:**
+- Both system-specific (`flake-utils.lib.eachDefaultSystem`) and top-level module exports
+- Top-level exports allow `inputs.claude-bar.homeManagerModules.default` in user flakes
+- Shell completions generated in `postInstall` phase for bash, zsh, and fish
+
+**Testing notes:**
+- GTK tests must run sequentially (`cargo test -- --test-threads=1`) due to GTK's single-thread initialization requirement
+- Unused code warnings are expected; Phase 9 will integrate remaining unused functionality
 
 ---
 
@@ -1480,10 +1501,10 @@ Key files in the original CodexBar implementation to reference:
 - [x] `refresh` command (D-Bus) working
 
 **Phase 8: Nix Integration**
-- [ ] Home Manager module created
-- [ ] NixOS module created
-- [ ] Shell completions installed
-- [ ] Documentation complete
+- [x] Home Manager module created
+- [x] NixOS module created
+- [x] Shell completions installed
+- [x] Documentation complete
 
 **Phase 9: Polish & Testing**
 - [ ] Error handling complete

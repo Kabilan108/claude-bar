@@ -122,10 +122,19 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Once;
+
+    static GTK_INIT: Once = Once::new();
+
+    fn init_gtk() {
+        GTK_INIT.call_once(|| {
+            gtk4::init().expect("Failed to initialize GTK");
+        });
+    }
 
     #[test]
     fn test_progress_clamping() {
-        gtk4::init().ok();
+        init_gtk();
 
         let bar = UsageProgressBar::new();
 
@@ -141,7 +150,7 @@ mod tests {
 
     #[test]
     fn test_label() {
-        gtk4::init().ok();
+        init_gtk();
 
         let bar = UsageProgressBar::new();
         bar.set_label("78% used");
