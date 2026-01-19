@@ -598,7 +598,7 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Usa
 
 ### 3.1 Provider Trait
 
-- [ ] Create `providers/mod.rs` with trait:
+- [x] Create `providers/mod.rs` with trait:
   ```rust
   #[async_trait]
   pub trait UsageProvider: Send + Sync {
@@ -615,49 +615,49 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Usa
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore/Providers/Claude/`
 
-- [ ] Create `providers/claude.rs`
-- [ ] Implement credential reading:
-  - [ ] Read from `~/.claude/.credentials.json`
-  - [ ] Parse token structure: `{ accessToken, refreshToken, expiresAt, scopes }`
-  - [ ] Check token expiration (don't refresh - just report error)
-  - [ ] Reference: `ClaudeOAuthCredentials.swift`
-- [ ] Implement usage API call:
-  - [ ] Endpoint: `https://api.anthropic.com/api/oauth/usage`
-  - [ ] Headers: `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`
-  - [ ] Reference: `ClaudeUsageFetcher.swift`
-- [ ] Parse response into `UsageSnapshot`:
-  - [ ] Extract primary (5-hour), secondary (weekly), opus (if present)
-  - [ ] Extract identity (email, organization, plan)
-  - [ ] Reference: `ClaudeUsageSnapshot.swift`
-- [ ] Error handling:
-  - [ ] Missing credentials file → "Run `claude` to authenticate"
-  - [ ] Expired token → "Run `claude` to refresh credentials"
-  - [ ] API errors (rate limit, auth failure)
-- [ ] Add unit tests with mock responses
+- [x] Create `providers/claude.rs`
+- [x] Implement credential reading:
+  - [x] Read from `~/.claude/.credentials.json`
+  - [x] Parse token structure: `{ accessToken, refreshToken, expiresAt, scopes }`
+  - [x] Check token expiration (don't refresh - just report error)
+  - [x] Reference: `ClaudeOAuthCredentials.swift`
+- [x] Implement usage API call:
+  - [x] Endpoint: `https://api.anthropic.com/api/oauth/usage`
+  - [x] Headers: `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`
+  - [x] Reference: `ClaudeUsageFetcher.swift`
+- [x] Parse response into `UsageSnapshot`:
+  - [x] Extract primary (5-hour), secondary (weekly), opus (if present)
+  - [x] Extract identity (email, organization, plan)
+  - [x] Reference: `ClaudeUsageSnapshot.swift`
+- [x] Error handling:
+  - [x] Missing credentials file → "Run `claude` to authenticate"
+  - [x] Expired token → "Run `claude` to refresh credentials"
+  - [x] API errors (rate limit, auth failure)
+- [x] Add unit tests with mock responses
 
 ### 3.3 Codex Provider
 
 Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore/Providers/Codex/`
 
-- [ ] Create `providers/codex.rs`
-- [ ] Implement credential reading:
-  - [ ] Read from `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`)
-  - [ ] Parse token structure
-  - [ ] Reference: `CodexOAuthCredentials.swift`
-- [ ] Implement usage API call:
-  - [ ] Endpoint: `https://chatgpt.com/backend-api/wham/usage`
-  - [ ] Headers: `Authorization: Bearer <token>`
-  - [ ] Reference: `CodexOAuthUsageFetcher.swift`
-- [ ] Parse response into `UsageSnapshot`
-- [ ] Error handling:
-  - [ ] Missing credentials → "Run `codex` to authenticate"
-  - [ ] Expired/revoked token
-  - [ ] API errors
-- [ ] Add unit tests with mock responses
+- [x] Create `providers/codex.rs`
+- [x] Implement credential reading:
+  - [x] Read from `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`)
+  - [x] Parse token structure
+  - [x] Reference: `CodexOAuthCredentials.swift`
+- [x] Implement usage API call:
+  - [x] Endpoint: `https://chatgpt.com/backend-api/wham/usage`
+  - [x] Headers: `Authorization: Bearer <token>`
+  - [x] Reference: `CodexOAuthUsageFetcher.swift`
+- [x] Parse response into `UsageSnapshot`
+- [x] Error handling:
+  - [x] Missing credentials → "Run `codex` to authenticate"
+  - [x] Expired/revoked token
+  - [x] API errors
+- [x] Add unit tests with mock responses
 
 ### 3.4 Provider Registry
 
-- [ ] Create `providers/registry.rs`:
+- [x] Create `providers/registry.rs`:
   ```rust
   pub struct ProviderRegistry {
       providers: Vec<Arc<dyn UsageProvider>>,
@@ -670,7 +670,40 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBarCore
       pub async fn fetch_all(&self) -> HashMap<Provider, Result<UsageSnapshot>>;
   }
   ```
-- [ ] Initialize based on settings (enabled providers)
+- [x] Initialize based on settings (enabled providers)
+
+### Phase 3 Notes
+
+**Claude provider credential structure:**
+- Credentials file wraps OAuth data in a `claudeAiOauth` object
+- Access token validity checked by ensuring it's non-empty
+- `rateLimitTier` field used to infer plan name (Pro, Max, Team, Enterprise)
+- API response uses `utilization` (0-100) which is converted to `used_percent` (0.0-1.0)
+- Windows available: `five_hour`, `seven_day`, `seven_day_sonnet`, `seven_day_opus`
+
+**Codex provider credential structure:**
+- Credentials stored in `tokens` object with `access_token`, `refresh_token`, `id_token`, `account_id`
+- `ChatGPT-Account-Id` header sent if account_id is present
+- API response uses integer `used_percent` (0-100) and unix timestamps for `reset_at`
+- `limit_window_seconds` converted to `window_minutes` for display
+
+**HTTP client configuration:**
+- 30-second timeout on all requests
+- User-Agent set to "claude-bar"
+- Proper Accept and Content-Type headers for JSON
+
+**Error handling:**
+- 401/403 errors provide specific authentication hints
+- Other HTTP errors include status code and response body
+- Credential parsing errors include context about the file path
+
+**Test coverage:**
+- Credential parsing for both providers
+- API response parsing with full and minimal responses
+- Reset time parsing (ISO8601 for Claude, unix timestamp for Codex)
+- Window to RateWindow conversion
+- Plan type inference/formatting
+- Provider metadata (name, identifier, dashboard URL, error hint)
 
 ---
 
@@ -1267,10 +1300,10 @@ Key files in the original CodexBar implementation to reference:
 - [x] Notifications working
 
 **Phase 3: Provider Implementations**
-- [ ] Provider trait defined
-- [ ] Claude provider working
-- [ ] Codex provider working
-- [ ] Provider registry working
+- [x] Provider trait defined
+- [x] Claude provider working
+- [x] Codex provider working
+- [x] Provider registry working
 
 **Phase 4: Cost Tracking**
 - [ ] Pricing fetcher (models.dev) working
