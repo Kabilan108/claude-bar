@@ -60,6 +60,9 @@ notify-rust = "4"
 # Async traits
 async-trait = "0.1"
 
+# URL opening
+open = "5"
+
 [profile.release]
 lto = true
 codegen-units = 1

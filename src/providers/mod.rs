@@ -58,4 +58,21 @@ impl ProviderRegistry {
 
         results
     }
+
+    pub async fn fetch_provider(&self, provider: Provider) -> Result<UsageSnapshot> {
+        for p in &self.providers {
+            if p.identifier() == provider {
+                return p.fetch_usage().await;
+            }
+        }
+
+        anyhow::bail!("Provider {:?} not enabled", provider)
+    }
+
+    pub fn get_provider(&self, provider: Provider) -> Option<&dyn UsageProvider> {
+        self.providers
+            .iter()
+            .find(|p| p.identifier() == provider)
+            .map(|p| p.as_ref())
+    }
 }

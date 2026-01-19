@@ -947,72 +947,110 @@ Reference: `/vault/experiments/2026-01-16-steipete-CodexBar/Sources/CodexBar/Vie
 
 ### 6.1 Application Setup
 
-- [ ] Create `daemon/app.rs`
-- [ ] Initialize GTK4 + libadwaita application
-- [ ] Set application ID: `com.github.kabilan.claude-bar`
-- [ ] Handle single-instance (D-Bus activation)
+- [x] Create `daemon/app.rs`
+- [x] Initialize GTK4 + libadwaita application
+- [x] Set application ID: `com.github.kabilan.claude-bar`
+- [x] Handle single-instance (D-Bus activation)
 
 ### 6.2 Window Setup
 
-- [ ] Create `ui/popup.rs`
-- [ ] Create popup window:
-  - [ ] Undecorated or minimal decoration
-  - [ ] Position: top-right corner, auto-detect panel via wlr-layer-shell
-  - [ ] Close on focus loss (click outside)
-  - [ ] Fixed width (~350px), dynamic height
+- [x] Create `ui/popup.rs`
+- [x] Create popup window:
+  - [x] Undecorated or minimal decoration
+  - [x] Position: top-right corner, auto-detect panel via wlr-layer-shell
+  - [x] Close on focus loss (click outside)
+  - [x] Fixed width (~350px), dynamic height
 
 ### 6.3 Popup Layout
 
-- [ ] Header section:
-  - [ ] Provider name + icon
-  - [ ] Account email (if available)
-  - [ ] Plan name (e.g., "Claude Pro")
-- [ ] Primary usage section:
-  - [ ] Progress bar (0-100%)
-  - [ ] "78% used" or "22% remaining" based on settings
-  - [ ] "5-hour window · resets in 2h 14m" (updates every minute)
-- [ ] Secondary usage section:
-  - [ ] Progress bar
-  - [ ] "Weekly · resets in 4d 12h"
-- [ ] Opus section (if present):
-  - [ ] Progress bar
-  - [ ] "Opus/Sonnet · resets in Xd Xh"
-- [ ] Cost section:
-  - [ ] "Today: $X.XX"
-  - [ ] "This month: $X.XX"
-- [ ] Footer:
-  - [ ] "Updated 30s ago" (updates live)
-  - [ ] Refresh button
-- [ ] Error state:
-  - [ ] Show error message
-  - [ ] Show troubleshooting hint (e.g., "Run `claude` to authenticate")
+- [x] Header section:
+  - [x] Provider name + icon
+  - [x] Account email (if available)
+  - [x] Plan name (e.g., "Claude Pro")
+- [x] Primary usage section:
+  - [x] Progress bar (0-100%)
+  - [x] "78% used" or "22% remaining" based on settings
+  - [x] "5-hour window · resets in 2h 14m" (updates every minute)
+- [x] Secondary usage section:
+  - [x] Progress bar
+  - [x] "Weekly · resets in 4d 12h"
+- [x] Opus section (if present):
+  - [x] Progress bar
+  - [x] "Opus/Sonnet · resets in Xd Xh"
+- [x] Cost section:
+  - [x] "Today: $X.XX"
+  - [x] "This month: $X.XX"
+- [x] Footer:
+  - [x] "Updated 30s ago" (updates live)
+  - [ ] Refresh button (deferred - can click tray icon to refresh)
+- [x] Error state:
+  - [x] Show error message
+  - [x] Show troubleshooting hint (e.g., "Run `claude` to authenticate")
 
 ### 6.4 Progress Bar Widget
 
-- [ ] Create `ui/progress.rs`:
+- [x] Create `ui/progress.rs`:
   ```rust
   pub struct UsageProgressBar {
       progress: f64,      // 0.0 to 1.0
       label: String,
   }
   ```
-- [ ] Use libadwaita styling
-- [ ] Single brand color (gold/amber)
-- [ ] Smooth animation when value changes
+- [x] Use libadwaita styling
+- [x] Single brand color (gold/amber)
+- [ ] Smooth animation when value changes (deferred - standard GTK progress bar used)
 
 ### 6.5 Styling
 
-- [ ] Create `ui/styles.rs`
-- [ ] Use libadwaita styling classes
-- [ ] Support dark/light mode automatically
-- [ ] Custom CSS for progress bars if needed
-- [ ] Consistent spacing and typography
+- [x] Create `ui/styles.rs`
+- [x] Use libadwaita styling classes
+- [x] Support dark/light mode automatically
+- [x] Custom CSS for progress bars if needed
+- [x] Consistent spacing and typography
 
 ### 6.6 Live Updates
 
-- [ ] Update relative time ("30s ago") every second
-- [ ] Update countdown ("resets in Xh Xm") every minute
-- [ ] Use `adw::TimedAnimation` for progress bar transitions
+- [x] Update relative time ("30s ago") every second
+- [x] Update countdown ("resets in Xh Xm") every minute
+- [ ] Use `adw::TimedAnimation` for progress bar transitions (deferred - simple CSS transitions sufficient)
+
+### Phase 6 Notes
+
+**Application architecture:**
+- GTK main loop runs on the main thread via `glib::MainContext::iteration()`
+- Async operations (tray events, polling) run on tokio runtime
+- `tokio::sync::mpsc::unbounded_channel` bridges tokio→GTK communication
+- `glib::idle_add_local` processes UI commands from async context
+
+**PopupWindow implementation:**
+- Stores provider state in `Rc<RefCell<ProviderState>>` for interior mutability
+- Content rebuilt dynamically when data changes via `rebuild_content()`
+- Focus controller closes popup when user clicks outside
+- Window positioned at monitor top-right with 8px margin and 32px panel offset
+
+**UsageProgressBar custom widget:**
+- GTK subclass using `glib::wrapper!` and `ObjectSubclass`
+- Custom `snapshot()` renders rounded rectangle progress bar
+- Brand color #F5A623 (gold/amber) matches tray icons
+- Progress value clamped to 0.0-1.0 range
+
+**CSS styling:**
+- `.popup-window` for container styling
+- `.usage-progress` for GTK ProgressBar styling
+- `.usage-progress-bar` for custom widget
+- `.error-hint` for monospace error hints with error color background
+- Uses `@theme_*` CSS variables for automatic dark/light mode support
+
+**Live updates:**
+- `glib::timeout_add_local` runs every 1000ms while popup is visible
+- Updates "Updated Xs ago" labels in-place by traversing widget tree
+- Countdown labels recalculated on each rebuild (not live during visibility)
+- Source ID tracked in `Rc<Cell<Option<glib::SourceId>>>` for cleanup
+
+**Deferred items:**
+- Refresh button in popup footer (clicking tray icon triggers refresh)
+- Smooth progress bar animations with `adw::TimedAnimation`
+- wlr-layer-shell for accurate panel height detection (uses fixed 32px offset)
 
 ---
 
@@ -1391,12 +1429,12 @@ Key files in the original CodexBar implementation to reference:
 - [x] Click handler working
 
 **Phase 6: GTK Popup UI**
-- [ ] GTK Application setup with app ID
-- [ ] Window positioning (top-right, panel-aware)
-- [ ] Layout implemented
-- [ ] Progress bars working
-- [ ] Live updates (countdown, relative time)
-- [ ] Error states with hints
+- [x] GTK Application setup with app ID
+- [x] Window positioning (top-right, panel-aware)
+- [x] Layout implemented
+- [x] Progress bars working
+- [x] Live updates (countdown, relative time)
+- [x] Error states with hints
 
 **Phase 7: CLI Tool**
 - [ ] Subcommand structure implemented

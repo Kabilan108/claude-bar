@@ -1,17 +1,306 @@
+use crate::core::models::Provider;
+use crate::core::settings::SettingsWatcher;
+use crate::core::store::UsageStore;
+use crate::daemon::tray::{run_animation_loop, TrayEvent, TrayManager};
+use crate::providers::ProviderRegistry;
+use crate::ui::PopupWindow;
 use anyhow::Result;
+use gtk4::glib;
+use gtk4::prelude::*;
+use libadwaita as adw;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 const APP_ID: &str = "com.github.kabilan.claude-bar";
+const POLL_INTERVAL: Duration = Duration::from_secs(60);
+const REFRESH_COOLDOWN: Duration = Duration::from_secs(5);
 
 pub async fn run() -> Result<()> {
     tracing::info!(app_id = APP_ID, "Initializing GTK application");
 
-    // TODO: Initialize GTK4 + libadwaita application
-    // - Set application ID for Hyprland window rules
-    // - Handle single-instance via D-Bus activation
-    // - Start tray and polling loop
+    let settings_watcher = SettingsWatcher::new()?;
+    let settings = settings_watcher.get_blocking();
 
-    println!("Daemon mode not yet implemented");
-    println!("Application ID: {}", APP_ID);
+    let store = Arc::new(UsageStore::new());
+    let tray_manager = Arc::new(TrayManager::new());
 
-    Ok(())
+    let registry = Arc::new(ProviderRegistry::new(&settings));
+
+    tray_manager.start(&settings, &store).await?;
+
+    let animation_manager = Arc::clone(&tray_manager);
+    tokio::spawn(async move {
+        run_animation_loop(animation_manager).await;
+    });
+
+    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
+
+    tokio::spawn(run_polling_loop(
+        Arc::clone(&registry),
+        Arc::clone(&store),
+        Arc::clone(&tray_manager),
+        ui_tx.clone(),
+    ));
+
+    if let Some(mut event_rx) = tray_manager.take_event_receiver().await {
+        let store_clone = Arc::clone(&store);
+        let registry_clone = Arc::clone(&registry);
+        let tray_clone = Arc::clone(&tray_manager);
+        let ui_tx_clone = ui_tx.clone();
+
+        tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                handle_tray_event(
+                    event,
+                    &store_clone,
+                    &registry_clone,
+                    &tray_clone,
+                    &ui_tx_clone,
+                )
+                .await;
+            }
+        });
+    }
+
+    run_gtk_main_loop(ui_rx).await
+}
+
+#[derive(Debug, Clone)]
+enum UiCommand {
+    ShowPopup {
+        provider: Provider,
+        snapshot: Option<crate::core::models::UsageSnapshot>,
+        cost: Option<crate::core::models::CostSnapshot>,
+        error: Option<(String, String)>,
+    },
+    UpdateUsage {
+        provider: Provider,
+        snapshot: crate::core::models::UsageSnapshot,
+    },
+    UpdateCost {
+        provider: Provider,
+        cost: crate::core::models::CostSnapshot,
+    },
+}
+
+async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Result<()> {
+    gtk4::init().expect("Failed to initialize GTK4");
+    adw::init().expect("Failed to initialize libadwaita");
+
+    let app = adw::Application::builder().application_id(APP_ID).build();
+
+    let popup_holder: std::rc::Rc<std::cell::RefCell<Option<PopupWindow>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    let popup_holder_activate = popup_holder.clone();
+    app.connect_activate(move |app| {
+        tracing::info!("GTK application activated");
+        let popup = PopupWindow::new(app);
+        *popup_holder_activate.borrow_mut() = Some(popup);
+    });
+
+    let _hold_guard = app.hold();
+
+    app.register(None::<&gtk4::gio::Cancellable>)?;
+    app.activate();
+
+    let popup_holder_idle = popup_holder.clone();
+    glib::idle_add_local(move || {
+        if let Ok(cmd) = ui_rx.try_recv() {
+            let popup_guard = popup_holder_idle.borrow();
+            if let Some(popup) = popup_guard.as_ref() {
+                match cmd {
+                    UiCommand::ShowPopup {
+                        provider,
+                        snapshot,
+                        cost,
+                        error,
+                    } => {
+                        if let Some((error_msg, hint)) = error {
+                            popup.show_error(provider, &error_msg, &hint);
+                        } else {
+                            if let Some(snap) = snapshot {
+                                popup.update_usage(provider, &snap);
+                            }
+                            if let Some(c) = cost {
+                                popup.update_cost(provider, &c);
+                            }
+                        }
+                        popup.show(provider);
+                    }
+                    UiCommand::UpdateUsage { provider, snapshot } => {
+                        popup.update_usage(provider, &snapshot);
+                    }
+                    UiCommand::UpdateCost { provider, cost } => {
+                        popup.update_cost(provider, &cost);
+                    }
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+
+    let main_context = glib::MainContext::default();
+    loop {
+        main_context.iteration(true);
+    }
+}
+
+async fn handle_tray_event(
+    event: TrayEvent,
+    store: &Arc<UsageStore>,
+    registry: &Arc<ProviderRegistry>,
+    tray: &Arc<TrayManager>,
+    ui_tx: &mpsc::UnboundedSender<UiCommand>,
+) {
+    match event {
+        TrayEvent::LeftClick(provider) => {
+            tracing::debug!(?provider, "Tray icon clicked");
+
+            if tray.should_refresh(provider).await {
+                tray.mark_refreshed(provider).await;
+                tray.set_loading(provider).await;
+
+                let registry_clone = Arc::clone(registry);
+                let store_clone = Arc::clone(store);
+                let tray_clone = Arc::clone(tray);
+                let ui_tx_clone = ui_tx.clone();
+                let p = provider;
+
+                tokio::spawn(async move {
+                    refresh_provider(&registry_clone, &store_clone, &tray_clone, &ui_tx_clone, p)
+                        .await;
+                });
+            }
+
+            let snapshot = store.get_snapshot(provider).await;
+            let cost = store.get_cost(provider).await;
+            let error = store
+                .get_error(provider)
+                .await
+                .map(|e| (e, provider_error_hint(provider).to_string()));
+
+            let _ = ui_tx.send(UiCommand::ShowPopup {
+                provider,
+                snapshot,
+                cost,
+                error,
+            });
+        }
+        TrayEvent::RefreshRequested => {
+            tracing::info!("Manual refresh requested");
+            for provider in [Provider::Claude, Provider::Codex] {
+                tray.set_loading(provider).await;
+            }
+
+            let results = registry.fetch_all().await;
+            for (provider, result) in results {
+                match result {
+                    Ok(snapshot) => {
+                        let primary = snapshot
+                            .primary
+                            .as_ref()
+                            .map(|r| r.used_percent)
+                            .unwrap_or(0.0);
+                        let secondary = snapshot
+                            .secondary
+                            .as_ref()
+                            .map(|r| r.used_percent)
+                            .unwrap_or(0.0);
+                        store.update_snapshot(provider, snapshot.clone()).await;
+                        tray.update_icon(provider, primary, secondary).await;
+                        tray.set_credentials_valid(provider, true).await;
+
+                        let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+                    }
+                    Err(e) => {
+                        let error_msg = e.to_string();
+                        tracing::warn!(?provider, error = %error_msg, "Failed to fetch usage");
+                        store.set_error(provider, error_msg).await;
+                        tray.set_error(provider).await;
+                    }
+                }
+            }
+        }
+        TrayEvent::OpenDashboard(provider) => {
+            let url = provider.dashboard_url();
+            tracing::info!(?provider, url, "Opening dashboard");
+            if let Err(e) = open::that(url) {
+                tracing::error!(error = %e, "Failed to open browser");
+            }
+        }
+        TrayEvent::Quit => {
+            tracing::info!("Quit requested");
+            tray.shutdown().await;
+            std::process::exit(0);
+        }
+    }
+}
+
+async fn run_polling_loop(
+    registry: Arc<ProviderRegistry>,
+    store: Arc<UsageStore>,
+    tray: Arc<TrayManager>,
+    ui_tx: mpsc::UnboundedSender<UiCommand>,
+) {
+    let mut interval = tokio::time::interval(POLL_INTERVAL);
+
+    interval.tick().await;
+    for provider in [Provider::Claude, Provider::Codex] {
+        refresh_provider(&registry, &store, &tray, &ui_tx, provider).await;
+    }
+
+    loop {
+        interval.tick().await;
+
+        for provider in [Provider::Claude, Provider::Codex] {
+            if store.should_refresh(provider, REFRESH_COOLDOWN).await {
+                refresh_provider(&registry, &store, &tray, &ui_tx, provider).await;
+            }
+        }
+    }
+}
+
+async fn refresh_provider(
+    registry: &Arc<ProviderRegistry>,
+    store: &Arc<UsageStore>,
+    tray: &Arc<TrayManager>,
+    ui_tx: &mpsc::UnboundedSender<UiCommand>,
+    provider: Provider,
+) {
+    let result = registry.fetch_provider(provider).await;
+
+    match result {
+        Ok(snapshot) => {
+            let primary = snapshot
+                .primary
+                .as_ref()
+                .map(|r| r.used_percent)
+                .unwrap_or(0.0);
+            let secondary = snapshot
+                .secondary
+                .as_ref()
+                .map(|r| r.used_percent)
+                .unwrap_or(0.0);
+            store.update_snapshot(provider, snapshot.clone()).await;
+            tray.update_icon(provider, primary, secondary).await;
+            tray.set_credentials_valid(provider, true).await;
+
+            let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+        }
+        Err(e) => {
+            let error_msg = e.to_string();
+            tracing::warn!(?provider, error = %error_msg, "Failed to fetch usage");
+            store.set_error(provider, error_msg).await;
+            tray.set_error(provider).await;
+        }
+    }
+}
+
+fn provider_error_hint(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "Run `claude` to authenticate",
+        Provider::Codex => "Run `codex` to authenticate",
+    }
 }

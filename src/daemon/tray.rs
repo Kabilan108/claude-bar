@@ -199,7 +199,7 @@ impl TrayManager {
         self.event_rx.write().await.take()
     }
 
-    pub async fn start(&self, settings: &Settings, _store: &UsageStore) -> anyhow::Result<()> {
+    pub async fn start(&self, settings: &Settings, _store: &Arc<UsageStore>) -> anyhow::Result<()> {
         let mut inner = self.inner.write().await;
         inner.merged_mode = settings.providers.merge_icons;
 
