@@ -2,7 +2,7 @@ use crate::core::models::Provider;
 use crate::core::settings::ThemeMode;
 use crate::core::settings::Settings;
 use crate::icons::{IconRenderer, IconState};
-use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
+use ksni::{self, menu::StandardItem, Handle, MenuItem, Tray, TrayMethods};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -180,7 +180,7 @@ struct TrayState {
     animation_phase: f64,
     has_credentials: bool,
     last_refresh: Instant,
-    handle: Option<ksni::Handle<ClaudeBarTray>>,
+    handle: Option<Handle<ClaudeBarTray>>,
 }
 
 impl TrayState {
@@ -189,7 +189,10 @@ impl TrayState {
         F: FnOnce(&mut ClaudeBarTray) + Send + 'static,
     {
         if let Some(handle) = &self.handle {
-            handle.update(updater);
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                let _ = handle.update(updater).await;
+            });
         }
     }
 }
@@ -288,9 +291,7 @@ impl TrayManager {
                 event_tx: self.event_tx.clone(),
             };
 
-            let service = TrayService::new(tray);
-            let handle = service.handle();
-            service.spawn();
+            let handle = tray.spawn().await?;
 
             inner.states.insert(
                 provider,
