@@ -1,69 +1,76 @@
-#[allow(dead_code)]
-pub const BRAND_COLOR: &str = "#F5A623";
+use crate::core::models::Provider;
+use crate::ui::colors;
 
-pub const CSS: &str = r#"
-.popup-window {
+pub fn css_for_provider(provider: Provider) -> String {
+    let accent = colors::provider_hex(provider);
+    format!(
+        r#"
+@define-color provider_accent {accent};
+
+.popup-window {{
     background-color: @window_bg_color;
     border-radius: 12px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
+}}
 
-.usage-progress {
-    min-height: 8px;
-    border-radius: 4px;
-    background-color: alpha(@window_fg_color, 0.1);
-}
-
-.usage-progress progress {
-    background-color: #F5A623;
-    border-radius: 4px;
-}
-
-.usage-progress trough {
-    min-height: 8px;
-    border-radius: 4px;
-    background-color: alpha(@window_fg_color, 0.1);
-}
-
-.usage-progress-bar {
-    min-height: 8px;
-}
-
-.usage-label {
-    font-size: 0.9em;
+.usage-label {{
+    font-size: 0.95em;
     color: @theme_fg_color;
-}
+}}
 
-.countdown-label {
+.countdown-label {{
+    font-size: 0.85em;
+    color: @theme_unfocused_fg_color;
+}}
+
+.cost-amount {{
+    font-weight: 400;
+    font-size: 0.85em;
+    color: @provider_accent;
+}}
+
+.cost-period {{
+    font-weight: 400;
+    font-size: 0.9em;
+    color: @theme_unfocused_fg_color;
+}}
+
+.cost-error {{
+    color: @error_color;
+    font-weight: 500;
+}}
+
+.footer-label {{
     font-size: 0.8em;
     color: @theme_unfocused_fg_color;
-}
+}}
 
-.cost-label {
-    font-weight: 500;
-    font-size: 0.9em;
-}
-
-.error-hint {
+.error-hint {{
     font-family: monospace;
     font-size: 0.85em;
     padding: 8px 12px;
     background-color: alpha(@error_color, 0.1);
     border-radius: 6px;
     border: 1px solid alpha(@error_color, 0.2);
-}
+}}
 
-.error {
+.error {{
     color: @error_color;
-}
+}}
 
-.heading {
+.heading {{
     font-weight: 600;
-    font-size: 0.95em;
-}
+    font-size: 1.0em;
+}}
 
-.title-3 {
+.title-3 {{
     font-weight: 700;
-    font-size: 1.1em;
+    font-size: 1.2em;
+}}
+
+.provider-choice {{
+    padding: 6px 8px;
+}}
+"#
+    )
 }
-"#;

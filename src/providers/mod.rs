@@ -46,6 +46,10 @@ impl ProviderRegistry {
         self.providers.iter().map(|p| p.as_ref())
     }
 
+    pub fn enabled_provider_ids(&self) -> Vec<Provider> {
+        self.providers.iter().map(|p| p.identifier()).collect()
+    }
+
     #[allow(dead_code)]
     pub fn primary_provider(&self) -> Option<&dyn UsageProvider> {
         self.providers.first().map(|p| p.as_ref())

@@ -1,4 +1,5 @@
 use crate::core::models::Provider;
+use crate::core::settings::ThemeMode;
 use crate::core::settings::Settings;
 use crate::icons::{IconRenderer, IconState};
 use ksni::{self, menu::StandardItem, MenuItem, Tray, TrayService};
@@ -27,6 +28,10 @@ struct ClaudeBarTray {
     state: IconState,
     animation_phase: f64,
     has_credentials: bool,
+    theme_mode: ThemeMode,
+    system_is_dark: bool,
+    merged_mode: bool,
+    providers: Vec<Provider>,
     event_tx: mpsc::UnboundedSender<TrayEvent>,
 }
 
@@ -55,7 +60,13 @@ impl Tray for ClaudeBarTray {
             (self.primary_percent, self.secondary_percent)
         };
 
-        let pixels = renderer.render(self.provider, primary, secondary, self.state);
+        let pixels = renderer.render(
+            self.provider,
+            primary,
+            secondary,
+            self.state,
+            self.is_dark(),
+        );
 
         vec![ksni::Icon {
             width: ICON_SIZE,
@@ -98,7 +109,18 @@ impl Tray for ClaudeBarTray {
             ..Default::default()
         })];
 
-        if self.has_credentials {
+        if self.merged_mode {
+            for provider in &self.providers {
+                let provider = *provider;
+                items.push(MenuItem::Standard(StandardItem {
+                    label: format!("Open {} Dashboard", provider.name()),
+                    activate: Box::new(move |tray: &mut Self| {
+                        let _ = tray.event_tx.send(TrayEvent::OpenDashboard(provider));
+                    }),
+                    ..Default::default()
+                }));
+            }
+        } else if self.has_credentials {
             items.push(MenuItem::Standard(StandardItem {
                 label: format!("Open {} Dashboard", self.provider.name()),
                 activate: Box::new(|tray: &mut Self| {
@@ -123,6 +145,16 @@ impl Tray for ClaudeBarTray {
 
     fn activate(&mut self, _x: i32, _y: i32) {
         let _ = self.event_tx.send(TrayEvent::LeftClick(self.provider));
+    }
+}
+
+impl ClaudeBarTray {
+    fn is_dark(&self) -> bool {
+        match self.theme_mode {
+            ThemeMode::Dark => true,
+            ThemeMode::Light => false,
+            ThemeMode::System => self.system_is_dark,
+        }
     }
 }
 
@@ -179,13 +211,17 @@ impl Default for TrayState {
 struct TrayManagerInner {
     states: HashMap<Provider, TrayState>,
     merged_mode: bool,
+    theme_mode: ThemeMode,
+    system_is_dark: bool,
 }
 
 impl Default for TrayManagerInner {
     fn default() -> Self {
         Self {
             states: HashMap::new(),
-            merged_mode: true,
+            merged_mode: false,
+            theme_mode: ThemeMode::System,
+            system_is_dark: false,
         }
     }
 }
@@ -213,21 +249,24 @@ impl TrayManager {
     pub async fn start(&self, settings: &Settings) -> anyhow::Result<()> {
         let mut inner = self.inner.write().await;
         inner.merged_mode = settings.providers.merge_icons;
+        inner.theme_mode = settings.theme.mode.clone();
+        inner.system_is_dark = matches!(settings.theme.mode, ThemeMode::Dark);
+
+        let mut enabled_providers = Vec::new();
+        if settings.providers.claude.enabled {
+            enabled_providers.push(Provider::Claude);
+        }
+        if settings.providers.codex.enabled {
+            enabled_providers.push(Provider::Codex);
+        }
+        if enabled_providers.is_empty() {
+            enabled_providers.push(Provider::Claude);
+        }
 
         let providers_to_show = if inner.merged_mode {
-            vec![Provider::Claude]
+            vec![*enabled_providers.first().unwrap_or(&Provider::Claude)]
         } else {
-            let mut providers = Vec::new();
-            if settings.providers.claude.enabled {
-                providers.push(Provider::Claude);
-            }
-            if settings.providers.codex.enabled {
-                providers.push(Provider::Codex);
-            }
-            if providers.is_empty() {
-                providers.push(Provider::Claude);
-            }
-            providers
+            enabled_providers.clone()
         };
 
         for provider in providers_to_show {
@@ -238,6 +277,14 @@ impl TrayManager {
                 state: IconState::Loading,
                 animation_phase: 0.0,
                 has_credentials: false,
+                theme_mode: inner.theme_mode.clone(),
+                system_is_dark: inner.system_is_dark,
+                merged_mode: inner.merged_mode,
+                providers: if inner.merged_mode {
+                    enabled_providers.clone()
+                } else {
+                    vec![provider]
+                },
                 event_tx: self.event_tx.clone(),
             };
 
@@ -295,6 +342,19 @@ impl TrayManager {
                 tray.has_credentials = false;
             });
         }
+
+        if inner
+            .states
+            .values()
+            .all(|state| state.state == IconState::Error)
+        {
+            for state in inner.states.values_mut() {
+                state.state = IconState::Normal;
+                state.sync_to_tray(|tray| {
+                    tray.state = IconState::Normal;
+                });
+            }
+        }
     }
 
     #[allow(dead_code)]
@@ -314,6 +374,16 @@ impl TrayManager {
             state.has_credentials = valid;
             state.sync_to_tray(move |tray| {
                 tray.has_credentials = valid;
+            });
+        }
+    }
+
+    pub async fn set_system_is_dark(&self, is_dark: bool) {
+        let mut inner = self.inner.write().await;
+        inner.system_is_dark = is_dark;
+        for state in inner.states.values() {
+            state.sync_to_tray(move |tray| {
+                tray.system_is_dark = is_dark;
             });
         }
     }
@@ -388,6 +458,6 @@ mod tests {
     #[tokio::test]
     async fn test_tray_manager_creation() {
         let manager = TrayManager::new();
-        assert!(manager.is_merged_mode().await);
+        assert!(!manager.is_merged_mode().await);
     }
 }

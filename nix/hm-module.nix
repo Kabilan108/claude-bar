@@ -16,6 +16,12 @@ in {
       description = "The claude-bar package to use.";
     };
 
+    theme.mode = mkOption {
+      type = types.enum [ "system" "light" "dark" ];
+      default = "system";
+      description = "Theme mode for the popup and tray icon.";
+    };
+
     settings = mkOption {
       type = tomlFormat.type;
       default = { };
@@ -33,6 +39,9 @@ in {
             enabled = true;
             threshold = 0.9;
           };
+          theme = {
+            mode = "system";
+          };
           debug = false;
         }
       '';
@@ -45,8 +54,9 @@ in {
   config = mkIf cfg.enable {
     home.packages = [ cfg.package ];
 
-    xdg.configFile."claude-bar/config.toml" = mkIf (cfg.settings != { }) {
-      source = tomlFormat.generate "claude-bar-config" cfg.settings;
+    xdg.configFile."claude-bar/config.toml" = mkIf (cfg.settings != { } || cfg.theme.mode != "system") {
+      source = tomlFormat.generate "claude-bar-config"
+        (lib.recursiveUpdate cfg.settings { theme = { mode = cfg.theme.mode; }; });
     };
 
     systemd.user.services.claude-bar = {

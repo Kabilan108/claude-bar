@@ -12,6 +12,7 @@ pub struct Settings {
     pub display: DisplaySettings,
     pub browser: BrowserSettings,
     pub notifications: NotificationSettings,
+    pub theme: ThemeSettings,
     pub debug: bool,
 }
 
@@ -28,7 +29,7 @@ impl Default for ProviderSettings {
         Self {
             claude: ProviderConfig { enabled: true },
             codex: ProviderConfig { enabled: true },
-            merge_icons: true,
+            merge_icons: false,
         }
     }
 }
@@ -71,6 +72,21 @@ impl Default for NotificationSettings {
             threshold: 0.9,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeSettings {
+    pub mode: ThemeMode,
 }
 
 impl Settings {
@@ -226,10 +242,11 @@ mod tests {
         let settings = Settings::default();
         assert!(settings.providers.claude.enabled);
         assert!(settings.providers.codex.enabled);
-        assert!(settings.providers.merge_icons);
+        assert!(!settings.providers.merge_icons);
         assert!(!settings.display.show_as_remaining);
         assert!(settings.notifications.enabled);
         assert!((settings.notifications.threshold - 0.9).abs() < f64::EPSILON);
+        assert!(matches!(settings.theme.mode, ThemeMode::System));
     }
 
     #[test]
@@ -264,6 +281,9 @@ mod tests {
             [notifications]
             enabled = false
             threshold = 0.85
+
+            [theme]
+            mode = "dark"
         "#;
 
         let settings: Settings = toml::from_str(toml).unwrap();
@@ -274,5 +294,6 @@ mod tests {
         assert!(settings.display.show_as_remaining);
         assert!(!settings.notifications.enabled);
         assert!((settings.notifications.threshold - 0.85).abs() < f64::EPSILON);
+        assert!(matches!(settings.theme.mode, ThemeMode::Dark));
     }
 }

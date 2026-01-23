@@ -1,3 +1,4 @@
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -31,6 +32,13 @@ impl UsageProgressBar {
     pub fn label(&self) -> String {
         self.imp().label.borrow().clone()
     }
+
+    pub fn set_colors(&self, accent: gdk::RGBA, trough: gdk::RGBA) {
+        let imp = self.imp();
+        imp.accent.replace(accent);
+        imp.trough.replace(trough);
+        self.queue_draw();
+    }
 }
 
 impl Default for UsageProgressBar {
@@ -58,10 +66,22 @@ mod imp {
     use super::*;
     use std::cell::RefCell;
 
-    #[derive(Default)]
     pub struct UsageProgressBarPriv {
         pub progress: Cell<f64>,
         pub label: RefCell<String>,
+        pub accent: RefCell<gdk::RGBA>,
+        pub trough: RefCell<gdk::RGBA>,
+    }
+
+    impl Default for UsageProgressBarPriv {
+        fn default() -> Self {
+            Self {
+                progress: Cell::new(0.0),
+                label: RefCell::new(String::new()),
+                accent: RefCell::new(gdk::RGBA::new(0.96, 0.65, 0.14, 1.0)),
+                trough: RefCell::new(gdk::RGBA::new(0.2, 0.2, 0.2, 0.3)),
+            }
+        }
     }
 
     #[glib::object_subclass]
@@ -98,7 +118,7 @@ mod imp {
                 width as f32,
                 height as f32,
                 radius,
-                gtk4::gdk::RGBA::new(0.2, 0.2, 0.2, 0.3),
+                *self.trough.borrow(),
             );
 
             if progress > 0.0 {
@@ -108,7 +128,7 @@ mod imp {
                     fill_width,
                     height as f32,
                     radius,
-                    gtk4::gdk::RGBA::new(0.96, 0.65, 0.14, 1.0),
+                    *self.accent.borrow(),
                 );
             }
         }
@@ -126,19 +146,24 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Once;
+    use std::sync::OnceLock;
 
-    static GTK_INIT: Once = Once::new();
+    static GTK_INIT: OnceLock<bool> = OnceLock::new();
 
-    fn init_gtk() {
-        GTK_INIT.call_once(|| {
-            gtk4::init().expect("Failed to initialize GTK");
-        });
+    fn init_gtk() -> bool {
+        if std::env::var("CLAUDE_BAR_GTK_TESTS").is_err() {
+            eprintln!("Skipping GTK-dependent test: set CLAUDE_BAR_GTK_TESTS=1 to enable.");
+            return false;
+        }
+        *GTK_INIT.get_or_init(|| gtk4::init().is_ok())
     }
 
     #[test]
     fn test_progress_clamping() {
-        init_gtk();
+        if !init_gtk() {
+            eprintln!("Skipping GTK-dependent test: GTK init failed.");
+            return;
+        }
 
         let bar = UsageProgressBar::new();
 
@@ -154,7 +179,10 @@ mod tests {
 
     #[test]
     fn test_label() {
-        init_gtk();
+        if !init_gtk() {
+            eprintln!("Skipping GTK-dependent test: GTK init failed.");
+            return;
+        }
 
         let bar = UsageProgressBar::new();
         bar.set_label("78% used");

@@ -2,6 +2,7 @@ use crate::core::models::{CostSnapshot, Provider, UsageSnapshot};
 use crate::core::retry::RetryState;
 use crate::core::settings::SettingsWatcher;
 use crate::core::store::UsageStore;
+use crate::cost::{CostStore, PricingRefreshResult};
 use crate::daemon::dbus::{start_dbus_server, DbusCommand};
 use crate::daemon::tray::{run_animation_loop, TrayEvent, TrayManager};
 use crate::providers::ProviderRegistry;
@@ -26,6 +27,7 @@ pub async fn run() -> Result<()> {
     let settings = settings_watcher.get().await;
 
     let store = Arc::new(UsageStore::new());
+    let cost_store = Arc::new(RwLock::new(CostStore::new()));
     let tray_manager = Arc::new(TrayManager::new());
     let retry_states = Arc::new(RwLock::new(HashMap::<Provider, RetryState>::new()));
 
@@ -43,6 +45,7 @@ pub async fn run() -> Result<()> {
         dbus_cmd_rx,
         Arc::clone(&registry),
         Arc::clone(&store),
+        Arc::clone(&cost_store),
         Arc::clone(&tray_manager),
         ui_tx.clone(),
     ));
@@ -52,6 +55,13 @@ pub async fn run() -> Result<()> {
         Arc::clone(&store),
         Arc::clone(&tray_manager),
         Arc::clone(&retry_states),
+        ui_tx.clone(),
+    ));
+
+    tokio::spawn(run_pricing_refresh_loop(Arc::clone(&cost_store)));
+    tokio::spawn(run_cost_scan_loop(
+        Arc::clone(&cost_store),
+        Arc::clone(&store),
         ui_tx.clone(),
     ));
 
@@ -75,13 +85,14 @@ pub async fn run() -> Result<()> {
         });
     }
 
-    run_gtk_main_loop(ui_rx).await
+    run_gtk_main_loop(ui_rx, settings.theme.mode, Arc::clone(&tray_manager)).await
 }
 
 async fn handle_dbus_commands(
     mut cmd_rx: mpsc::UnboundedReceiver<DbusCommand>,
     registry: Arc<ProviderRegistry>,
     store: Arc<UsageStore>,
+    cost_store: Arc<RwLock<CostStore>>,
     tray: Arc<TrayManager>,
     ui_tx: mpsc::UnboundedSender<UiCommand>,
 ) {
@@ -92,6 +103,24 @@ async fn handle_dbus_commands(
                 for provider in [Provider::Claude, Provider::Codex] {
                     tray.set_loading(provider).await;
                     refresh_provider(&registry, &store, &tray, &ui_tx, provider).await;
+                }
+            }
+            DbusCommand::RefreshPricing => {
+                tracing::info!("D-Bus refresh pricing command received");
+                let refresh_result = {
+                    let mut cost_store = cost_store.write().await;
+                    cost_store.refresh_pricing(true).await
+                };
+
+                match refresh_result {
+                    Ok(PricingRefreshResult::Refreshed) => {
+                        scan_and_update_costs(&cost_store, &store, &ui_tx).await;
+                    }
+                    Ok(PricingRefreshResult::Skipped) => {}
+                    Ok(PricingRefreshResult::Failed) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Pricing refresh failed");
+                    }
                 }
             }
         }
@@ -106,13 +135,24 @@ enum UiCommand {
         cost: Option<CostSnapshot>,
         error: Option<(String, String)>,
     },
+    ShowProviderMenu {
+        providers: Vec<Provider>,
+    },
     UpdateUsage {
         provider: Provider,
         snapshot: UsageSnapshot,
     },
+    UpdateCost {
+        provider: Provider,
+        cost: CostSnapshot,
+    },
 }
 
-async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Result<()> {
+async fn run_gtk_main_loop(
+    mut ui_rx: mpsc::UnboundedReceiver<UiCommand>,
+    theme_mode: crate::core::settings::ThemeMode,
+    tray_manager: Arc<TrayManager>,
+) -> Result<()> {
     gtk4::init().expect("Failed to initialize GTK4");
     adw::init().expect("Failed to initialize libadwaita");
 
@@ -120,10 +160,19 @@ async fn run_gtk_main_loop(mut ui_rx: mpsc::UnboundedReceiver<UiCommand>) -> Res
     let popup_holder: Rc<RefCell<Option<PopupWindow>>> = Rc::new(RefCell::new(None));
 
     let popup_holder_activate = popup_holder.clone();
+    let theme_mode = theme_mode.clone();
+    let tray_manager_theme = Arc::clone(&tray_manager);
     app.connect_activate(move |app| {
         tracing::info!("GTK application activated");
-        let popup = PopupWindow::new(app);
+        let popup = PopupWindow::new(app, theme_mode.clone());
         *popup_holder_activate.borrow_mut() = Some(popup);
+        if matches!(theme_mode, crate::core::settings::ThemeMode::System) {
+            let is_dark = adw::StyleManager::default().is_dark();
+            let tray_manager = Arc::clone(&tray_manager_theme);
+            tokio::spawn(async move {
+                tray_manager.set_system_is_dark(is_dark).await;
+            });
+        }
     });
 
     let _hold_guard = app.hold();
@@ -166,8 +215,14 @@ fn handle_ui_command(popup: &PopupWindow, cmd: UiCommand) {
             }
             popup.show(provider);
         }
+        UiCommand::ShowProviderMenu { providers } => {
+            popup.show_provider_menu(&providers);
+        }
         UiCommand::UpdateUsage { provider, snapshot } => {
             popup.update_usage(provider, &snapshot);
+        }
+        UiCommand::UpdateCost { provider, cost } => {
+            popup.update_cost(provider, &cost);
         }
     }
 }
@@ -182,6 +237,15 @@ async fn handle_tray_event(
     match event {
         TrayEvent::LeftClick(provider) => {
             tracing::debug!(?provider, "Tray icon clicked");
+
+            if tray.is_merged_mode().await {
+                let mut providers = registry.enabled_provider_ids();
+                if providers.is_empty() {
+                    providers.push(Provider::Claude);
+                }
+                let _ = ui_tx.send(UiCommand::ShowProviderMenu { providers });
+                return;
+            }
 
             if tray.should_refresh(provider).await {
                 tray.mark_refreshed(provider).await;
@@ -294,6 +358,66 @@ async fn run_polling_loop(
                 .await;
             }
         }
+    }
+}
+
+async fn run_pricing_refresh_loop(cost_store: Arc<RwLock<CostStore>>) {
+    loop {
+        let refresh_result = {
+            let mut cost_store = cost_store.write().await;
+            cost_store.refresh_pricing(true).await
+        };
+
+        match refresh_result {
+            Ok(PricingRefreshResult::Refreshed) => {
+                break;
+            }
+            Ok(PricingRefreshResult::Skipped) => {
+                break;
+            }
+            Ok(PricingRefreshResult::Failed) => {
+                tracing::warn!("Pricing refresh failed, retrying in 5 minutes");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Pricing refresh failed, retrying in 5 minutes");
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(300)).await;
+    }
+}
+
+async fn run_cost_scan_loop(
+    cost_store: Arc<RwLock<CostStore>>,
+    store: Arc<UsageStore>,
+    ui_tx: mpsc::UnboundedSender<UiCommand>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(300));
+
+    scan_and_update_costs(&cost_store, &store, &ui_tx).await;
+
+    loop {
+        interval.tick().await;
+        scan_and_update_costs(&cost_store, &store, &ui_tx).await;
+    }
+}
+
+async fn scan_and_update_costs(
+    cost_store: &Arc<RwLock<CostStore>>,
+    store: &Arc<UsageStore>,
+    ui_tx: &mpsc::UnboundedSender<UiCommand>,
+) {
+    let costs = {
+        let mut cost_store = cost_store.write().await;
+        cost_store.scan_all()
+    };
+
+    for (provider, snapshot) in costs {
+        store.update_cost(provider, snapshot.clone()).await;
+        let _ = ui_tx.send(UiCommand::UpdateCost {
+            provider,
+            cost: snapshot,
+        });
     }
 }
 

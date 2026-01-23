@@ -12,10 +12,10 @@ This specification addresses refinements to the Claude Bar prototype based on us
 
 **Implementation Tasks**:
 
-- [ ] **0.1** Investigate models.dev API response format - the parsing may be broken due to API changes
-- [ ] **0.2** Fix the models.dev response parser in `src/cost/pricing.rs`
-- [ ] **0.3** Fix negative zero display - ensure costs display as "$0.00" not "$-0.00"
-- [ ] **0.4** Add better error logging to show what part of parsing failed
+- [x] **0.1** Investigate models.dev API response format - the parsing may be broken due to API changes
+- [x] **0.2** Fix the models.dev response parser in `src/cost/pricing.rs`
+- [x] **0.3** Fix negative zero display - ensure costs display as "$0.00" not "$-0.00"
+- [x] **0.4** Add better error logging to show what part of parsing failed
 
 **Files to modify**:
 - `src/cost/pricing.rs` - Fix parsing logic
@@ -58,15 +58,15 @@ This specification addresses refinements to the Claude Bar prototype based on us
 
 **Implementation Tasks**:
 
-- [ ] **1.1** Instantiate `CostStore` in daemon `run()` function alongside `UsageStore`
-- [ ] **1.2** Add cost scanning to the polling loop - call `CostStore::scan_all()` periodically (e.g., every 5 minutes)
-- [ ] **1.3** Wire scanned costs into `UsageStore.update_cost()` for each provider
-- [ ] **1.4** Add pricing refresh at daemon startup with 5-minute retry on failure
-- [ ] **1.5** Add `RefreshPricing` D-Bus method to `src/daemon/dbus.rs`
-- [ ] **1.6** Add `claude-bar refresh-pricing` CLI subcommand in `src/cli/`
-- [ ] **1.7** Ensure `ShowPopup` command includes cost data from `store.get_cost(provider)`
-- [ ] **1.8** Update popup UI to show inline cost format with proper error handling
-- [ ] **1.9** Implement click-to-copy for error messages with tooltip feedback
+- [x] **1.1** Instantiate `CostStore` in daemon `run()` function alongside `UsageStore`
+- [x] **1.2** Add cost scanning to the polling loop - call `CostStore::scan_all()` periodically (e.g., every 5 minutes)
+- [x] **1.3** Wire scanned costs into `UsageStore.update_cost()` for each provider
+- [x] **1.4** Add pricing refresh at daemon startup with 5-minute retry on failure
+- [x] **1.5** Add `RefreshPricing` D-Bus method to `src/daemon/dbus.rs`
+- [x] **1.6** Add `claude-bar refresh-pricing` CLI subcommand in `src/cli/`
+- [x] **1.7** Ensure `ShowPopup` command includes cost data from `store.get_cost(provider)`
+- [x] **1.8** Update popup UI to show inline cost format with proper error handling
+- [x] **1.9** Implement click-to-copy for error messages with tooltip feedback
 
 **Files to modify**:
 - `src/daemon/app.rs` - Add CostStore integration, pricing retry logic
@@ -117,12 +117,12 @@ The Anthropic API returns:
 
 **Implementation Tasks**:
 
-- [ ] **2.1** Refactor `UsageSnapshot` to support multiple optional model carve-out windows (not just single `opus` field)
-- [ ] **2.2** Update Claude provider to populate separate `seven_day_sonnet` and `seven_day_opus` fields (not either/or)
-- [ ] **2.3** Update popup rendering to dynamically create progress bars based on available data
-- [ ] **2.4** Calculate popup height dynamically: `base_height + (num_bars × bar_height) + (has_cost × cost_height)`
-- [ ] **2.5** Update tray icon to only use primary (session) and secondary (weekly) windows
-- [ ] **2.6** Handle missing data gracefully - show available bars only (if only weekly exists, show one bar)
+- [x] **2.1** Refactor `UsageSnapshot` to support multiple optional model carve-out windows (not just single `opus` field)
+- [x] **2.2** Update Claude provider to populate separate `seven_day_sonnet` and `seven_day_opus` fields (not either/or)
+- [x] **2.3** Update popup rendering to dynamically create progress bars based on available data
+- [x] **2.4** Calculate popup height dynamically: `base_height + (num_bars × bar_height) + (has_cost × cost_height)`
+- [x] **2.5** Update tray icon to only use primary (session) and secondary (weekly) windows
+- [x] **2.6** Handle missing data gracefully - show available bars only (if only weekly exists, show one bar)
 
 **Files to modify**:
 - `src/core/models.rs` - Refactor UsageSnapshot structure
@@ -188,14 +188,14 @@ services.claude-bar = {
 
 **Implementation Tasks**:
 
-- [ ] **3.1** Create `src/ui/colors.rs` with provider color constants and muted color computation
-- [ ] **3.2** Add `ThemeSettings` struct to `src/core/settings.rs` with `mode: ThemeMode` enum
-- [ ] **3.3** Update `src/ui/styles.rs` to generate CSS with provider-specific accent colors
-- [ ] **3.4** Update `PopupWindow` to apply `AdwStyleManager::set_color_scheme()` based on theme mode
-- [ ] **3.5** Update tray icon rendering to use provider colors for bars and computed muted for unfilled
-- [ ] **3.6** Add rounded rectangle background to tray icon that adapts to light/dark
-- [ ] **3.7** Update `nix/hm-module.nix` to add `theme.mode` option only
-- [ ] **3.8** Update `config.example.toml` with theme section
+- [x] **3.1** Create `src/ui/colors.rs` with provider color constants and muted color computation
+- [x] **3.2** Add `ThemeSettings` struct to `src/core/settings.rs` with `mode: ThemeMode` enum
+- [x] **3.3** Update `src/ui/styles.rs` to generate CSS with provider-specific accent colors
+- [x] **3.4** Update `PopupWindow` to apply `AdwStyleManager::set_color_scheme()` based on theme mode
+- [x] **3.5** Update tray icon rendering to use provider colors for bars and computed muted for unfilled
+- [x] **3.6** Add rounded rectangle background to tray icon that adapts to light/dark
+- [x] **3.7** Update `nix/hm-module.nix` to add `theme.mode` option only
+- [x] **3.8** Update `config.example.toml` with theme section
 
 **Files to modify**:
 - `src/ui/colors.rs` (new) - Provider color constants and computation
@@ -239,10 +239,10 @@ This removes ambiguity - with a merged icon, user must explicitly choose which p
 
 **Implementation Tasks**:
 
-- [ ] **4.1** Change default `merge` setting to `false` in config defaults
-- [ ] **4.2** Implement left-click provider selection menu for merged icon
-- [ ] **4.3** Update right-click menu for merged icon to include dashboard options for all configured providers
-- [ ] **4.4** Ensure separate icons maintain current left-click → popup behavior
+- [x] **4.1** Change default `merge` setting to `false` in config defaults
+- [x] **4.2** Implement left-click provider selection menu for merged icon
+- [x] **4.3** Update right-click menu for merged icon to include dashboard options for all configured providers
+- [x] **4.4** Ensure separate icons maintain current left-click → popup behavior
 
 **Files to modify**:
 - `src/core/settings.rs` - Change merge default to false
@@ -272,9 +272,9 @@ When cost log parsing fails:
 
 **Implementation Tasks**:
 
-- [ ] **5.1** Add keyboard event handling to popup (Escape, Tab, Shift+Tab)
-- [ ] **5.2** Implement in-place provider switching with smooth content transition
-- [ ] **5.3** Implement click-to-copy on error messages with tooltip feedback
+- [x] **5.1** Add keyboard event handling to popup (Escape, Tab, Shift+Tab)
+- [x] **5.2** Implement in-place provider switching with smooth content transition
+- [x] **5.3** Implement click-to-copy on error messages with tooltip feedback
 
 **Files to modify**:
 - `src/ui/popup.rs` - Keyboard handling, provider switching, error click behavior
@@ -297,7 +297,7 @@ When cost log parsing fails:
 - [ ] **6.7** Test keyboard navigation
 - [ ] **6.8** Run `cargo clippy` and fix any warnings
 - [ ] **6.9** Run `cargo test` and ensure all tests pass
-- [ ] **6.10** Update README.md if needed
+- [x] **6.10** Update README.md if needed
 
 ---
 

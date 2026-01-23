@@ -52,11 +52,12 @@ Then use the Home Manager module:
 
   services.claude-bar = {
     enable = true;
+    theme.mode = "system";
     settings = {
       providers = {
         claude.enabled = true;
         codex.enabled = true;
-        merge_icons = true;
+        merge_icons = false;
       };
       notifications = {
         enabled = true;
@@ -126,6 +127,12 @@ Trigger a manual refresh:
 claude-bar refresh
 ```
 
+Trigger a pricing refresh:
+
+```bash
+claude-bar refresh-pricing
+```
+
 Generate shell completions:
 
 ```bash
@@ -147,7 +154,7 @@ cp config.example.toml ~/.config/claude-bar/config.toml
 
 ```toml
 [providers]
-merge_icons = true  # Single merged icon vs separate per-provider icons
+merge_icons = false  # Single merged icon vs separate per-provider icons
 
 [providers.claude]
 enabled = true
@@ -164,6 +171,9 @@ preferred = "firefox"  # Optional: browser for dashboard links (default: xdg-ope
 [notifications]
 enabled = true
 threshold = 0.9  # 90% usage triggers notification
+
+[theme]
+mode = "system"  # "system", "light", or "dark"
 
 debug = false  # Enable verbose logging
 ```
@@ -204,7 +214,8 @@ claude-bar daemon
 claude-bar CLI
 ├── status - Direct API fetch for current usage
 ├── cost - Local log scanning for cost data
-└── refresh - D-Bus call to trigger daemon refresh
+├── refresh - D-Bus call to trigger daemon refresh
+└── refresh-pricing - D-Bus call to refresh pricing cache
 ```
 
 ## Logging

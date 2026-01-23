@@ -4,7 +4,7 @@
 # Provider settings
 [providers]
 # Show a single merged icon (true) or separate icons per provider (false)
-merge_icons = true
+merge_icons = false
 
 [providers.claude]
 # Enable Claude Code usage monitoring
@@ -35,6 +35,11 @@ enabled = true
 # Usage threshold (0.0-1.0) at which to show warning
 # 0.9 = 90% usage
 threshold = 0.9
+
+# Theme settings
+[theme]
+# Options: "system", "light", "dark"
+mode = "system"
 
 # Debug mode
 # Enables verbose logging and debug tooltips

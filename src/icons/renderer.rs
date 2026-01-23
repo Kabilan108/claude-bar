@@ -1,7 +1,9 @@
 use crate::core::models::Provider;
+use crate::ui::colors;
 
 const ICON_SIZE: u32 = 22;
-const BRAND_COLOR: (u8, u8, u8) = (245, 166, 35); // #F5A623
+const BACKGROUND_ALPHA_DARK: u8 = 70;
+const BACKGROUND_ALPHA_LIGHT: u8 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IconState {
@@ -28,21 +30,35 @@ impl IconRenderer {
 
     pub fn render(
         &self,
-        _provider: Provider,
+        provider: Provider,
         primary: f64,
         secondary: f64,
         state: IconState,
+        is_dark: bool,
     ) -> Vec<u8> {
         let width = self.size as usize;
         let height = self.size as usize;
         let mut pixels = vec![0u8; width * height * 4]; // RGBA
 
         let (r, g, b) = match state {
-            IconState::Normal => BRAND_COLOR,
-            IconState::Loading => BRAND_COLOR,
+            IconState::Normal => colors::provider_rgb(provider),
+            IconState::Loading => colors::provider_rgb(provider),
             IconState::Error => (128, 128, 128), // Gray
             IconState::Stale => (180, 180, 180), // Light gray
         };
+        let muted = colors::muted_rgb((r, g, b));
+
+        let background_alpha = if is_dark {
+            BACKGROUND_ALPHA_DARK
+        } else {
+            BACKGROUND_ALPHA_LIGHT
+        };
+        let background_color = if is_dark {
+            (240, 240, 240, background_alpha)
+        } else {
+            (0, 0, 0, background_alpha)
+        };
+        self.draw_rounded_rect(&mut pixels, width, height, 5.0, background_color);
 
         // Draw two horizontal bars
         let bar_height = (height as f64 * 0.35) as usize;
@@ -62,6 +78,7 @@ impl IconRenderer {
             bar_height,
             primary_fill,
             (r, g, b),
+            muted,
         );
 
         // Secondary bar (bottom)
@@ -76,6 +93,7 @@ impl IconRenderer {
             bar_height,
             secondary_fill,
             (r, g, b),
+            muted,
         );
 
         pixels
@@ -92,8 +110,10 @@ impl IconRenderer {
         height: usize,
         fill: usize,
         color: (u8, u8, u8),
+        empty_color: (u8, u8, u8),
     ) {
         let (r, g, b) = color;
+        let (er, eg, eb) = empty_color;
 
         for dy in 0..height {
             for dx in 0..width {
@@ -110,11 +130,36 @@ impl IconRenderer {
                         pixels[idx + 3] = 255;
                     } else {
                         // Empty portion (dimmed)
-                        pixels[idx] = r / 4;
-                        pixels[idx + 1] = g / 4;
-                        pixels[idx + 2] = b / 4;
-                        pixels[idx + 3] = 128;
+                        pixels[idx] = er;
+                        pixels[idx + 1] = eg;
+                        pixels[idx + 2] = eb;
+                        pixels[idx + 3] = 140;
                     }
+                }
+            }
+        }
+    }
+
+    fn draw_rounded_rect(
+        &self,
+        pixels: &mut [u8],
+        width: usize,
+        height: usize,
+        radius: f32,
+        color: (u8, u8, u8, u8),
+    ) {
+        let (r, g, b, a) = color;
+        for y in 0..height {
+            for x in 0..width {
+                if !inside_rounded_rect(x, y, width, height, radius) {
+                    continue;
+                }
+                let idx = (y * width + x) * 4;
+                if idx + 3 < pixels.len() {
+                    pixels[idx] = r;
+                    pixels[idx + 1] = g;
+                    pixels[idx + 2] = b;
+                    pixels[idx + 3] = a;
                 }
             }
         }
@@ -134,6 +179,27 @@ impl Default for IconRenderer {
     }
 }
 
+fn inside_rounded_rect(x: usize, y: usize, width: usize, height: usize, radius: f32) -> bool {
+    let x = x as f32;
+    let y = y as f32;
+    let width = width as f32;
+    let height = height as f32;
+    let r = radius.max(0.0);
+
+    if x >= r && x < width - r {
+        return true;
+    }
+    if y >= r && y < height - r {
+        return true;
+    }
+
+    let cx = if x < r { r } else { width - r };
+    let cy = if y < r { r } else { height - r };
+    let dx = x - cx;
+    let dy = y - cy;
+    dx * dx + dy * dy <= r * r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,7 +207,7 @@ mod tests {
     #[test]
     fn test_render_produces_correct_size() {
         let renderer = IconRenderer::new();
-        let pixels = renderer.render(Provider::Claude, 0.5, 0.5, IconState::Normal);
+        let pixels = renderer.render(Provider::Claude, 0.5, 0.5, IconState::Normal, false);
         assert_eq!(pixels.len(), 22 * 22 * 4);
     }
 
