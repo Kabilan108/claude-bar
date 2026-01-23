@@ -56,6 +56,9 @@ enum Commands {
     /// Trigger daemon refresh via D-Bus
     Refresh,
 
+    /// Trigger pricing refresh via D-Bus
+    RefreshPricing,
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -132,6 +135,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Refresh => {
             init_logging(false);
             cli::refresh::run().await
+        }
+        Commands::RefreshPricing => {
+            init_logging(false);
+            cli::refresh_pricing::run().await
         }
         Commands::Completions { shell } => {
             let mut cmd = Cli::command();

@@ -32,7 +32,7 @@ struct DailyBreakdown {
 pub async fn run(json: bool, days: u32) -> Result<()> {
     let mut cost_store = CostStore::new();
 
-    cost_store.refresh_pricing().await?;
+    cost_store.refresh_pricing(false).await?;
 
     let costs = cost_store.scan_all();
 

@@ -8,4 +8,4 @@ mod store;
 pub use pricing::{ModelPricing, PricingStore, TokenUsage};
 #[allow(unused_imports)]
 pub use scanner::CostScanner;
-pub use store::CostStore;
+pub use store::{CostStore, PricingRefreshResult};

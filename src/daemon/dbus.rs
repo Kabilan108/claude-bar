@@ -6,6 +6,7 @@ use zbus::interface;
 #[derive(Debug)]
 pub enum DbusCommand {
     Refresh,
+    RefreshPricing,
 }
 
 pub struct ClaudeBarService {
@@ -33,6 +34,15 @@ impl ClaudeBarService {
         tracing::info!("D-Bus Refresh called");
         self.command_tx
             .send(DbusCommand::Refresh)
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        Ok(())
+    }
+
+    #[zbus(name = "RefreshPricing")]
+    async fn refresh_pricing(&self) -> zbus::fdo::Result<()> {
+        tracing::info!("D-Bus RefreshPricing called");
+        self.command_tx
+            .send(DbusCommand::RefreshPricing)
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         Ok(())
     }

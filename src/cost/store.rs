@@ -12,24 +12,36 @@ pub struct CostStore {
     codex_scanner: CodexCostScanner,
     pricing: PricingStore,
     cached_costs: HashMap<Provider, CostSnapshot>,
+    pricing_failed: bool,
+    pricing_successful: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PricingRefreshResult {
+    Refreshed,
+    Skipped,
+    Failed,
 }
 
 impl CostStore {
     pub fn new() -> Self {
         let pricing = PricingStore::load_from_cache().unwrap_or_default();
+        let pricing_successful = pricing.last_fetch().is_some();
 
         Self {
             claude_scanner: ClaudeCostScanner::new(pricing.clone()),
             codex_scanner: CodexCostScanner::new(pricing.clone()),
             pricing,
             cached_costs: HashMap::new(),
+            pricing_failed: !pricing_successful,
+            pricing_successful,
         }
     }
 
-    pub async fn refresh_pricing(&mut self) -> Result<()> {
-        if !self.pricing.needs_refresh() {
+    pub async fn refresh_pricing(&mut self, force: bool) -> Result<PricingRefreshResult> {
+        if !force && !self.pricing.needs_refresh() {
             tracing::debug!("Pricing cache is fresh, skipping refresh");
-            return Ok(());
+            return Ok(PricingRefreshResult::Skipped);
         }
 
         match PricingStore::fetch_from_models_dev().await {
@@ -41,14 +53,19 @@ impl CostStore {
                 self.claude_scanner = ClaudeCostScanner::new(self.pricing.clone());
                 self.codex_scanner = CodexCostScanner::new(self.pricing.clone());
 
+                self.pricing_successful = true;
+                self.pricing_failed = false;
                 tracing::info!("Refreshed pricing from models.dev");
+                Ok(PricingRefreshResult::Refreshed)
             }
             Err(e) => {
+                if !self.pricing_successful {
+                    self.pricing_failed = true;
+                }
                 tracing::warn!(error = %e, "Failed to refresh pricing, using cached/default");
+                Ok(PricingRefreshResult::Failed)
             }
         }
-
-        Ok(())
     }
 
     pub fn scan_all(&mut self) -> HashMap<Provider, CostSnapshot> {
@@ -65,15 +82,25 @@ impl CostStore {
         for (provider, scanner) in scanners {
             match scanner.scan(since, today) {
                 Ok(costs) => {
-                    let snapshot = Self::aggregate_costs(&costs, today, month_start);
+                    let snapshot =
+                        Self::aggregate_costs(&costs, today, month_start, self.pricing_failed);
                     self.cached_costs.insert(provider, snapshot.clone());
                     results.insert(provider, snapshot);
                 }
                 Err(e) => {
                     tracing::warn!(?provider, error = %e, "Failed to scan costs");
-                    if let Some(cached) = self.cached_costs.get(&provider) {
-                        results.insert(provider, cached.clone());
-                    }
+                    let snapshot = self
+                        .cached_costs
+                        .get(&provider)
+                        .cloned()
+                        .unwrap_or_else(|| CostSnapshot {
+                            pricing_estimate: self.pricing_failed,
+                            log_error: true,
+                            ..CostSnapshot::default()
+                        });
+                    let snapshot = mark_log_error(snapshot, self.pricing_failed);
+                    self.cached_costs.insert(provider, snapshot.clone());
+                    results.insert(provider, snapshot);
                 }
             }
         }
@@ -94,13 +121,25 @@ impl CostStore {
 
         match scanner.scan(since, today) {
             Ok(costs) => {
-                let snapshot = Self::aggregate_costs(&costs, today, month_start);
+                let snapshot =
+                    Self::aggregate_costs(&costs, today, month_start, self.pricing_failed);
                 self.cached_costs.insert(provider, snapshot.clone());
                 Some(snapshot)
             }
             Err(e) => {
                 tracing::warn!(?provider, error = %e, "Failed to scan costs");
-                self.cached_costs.get(&provider).cloned()
+                let snapshot = self
+                    .cached_costs
+                    .get(&provider)
+                    .cloned()
+                    .unwrap_or_else(|| CostSnapshot {
+                        pricing_estimate: self.pricing_failed,
+                        log_error: true,
+                        ..CostSnapshot::default()
+                    });
+                let snapshot = mark_log_error(snapshot, self.pricing_failed);
+                self.cached_costs.insert(provider, snapshot.clone());
+                Some(snapshot)
             }
         }
     }
@@ -119,6 +158,7 @@ impl CostStore {
         costs: &[DailyCost],
         today: NaiveDate,
         month_start: NaiveDate,
+        pricing_estimate: bool,
     ) -> CostSnapshot {
         let today_cost: f64 = costs
             .iter()
@@ -139,12 +179,28 @@ impl CostStore {
             .collect();
 
         CostSnapshot {
-            today_cost,
-            monthly_cost,
+            today_cost: normalize_cost(today_cost),
+            monthly_cost: normalize_cost(monthly_cost),
             currency: "USD".to_string(),
             daily_breakdown,
+            pricing_estimate,
+            log_error: false,
         }
     }
+}
+
+fn normalize_cost(value: f64) -> f64 {
+    if value.abs() < 0.005 {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn mark_log_error(mut snapshot: CostSnapshot, pricing_estimate: bool) -> CostSnapshot {
+    snapshot.log_error = true;
+    snapshot.pricing_estimate = pricing_estimate;
+    snapshot
 }
 
 impl Default for CostStore {
@@ -180,7 +236,7 @@ mod tests {
             },
         ];
 
-        let snapshot = CostStore::aggregate_costs(&costs, today, month_start);
+        let snapshot = CostStore::aggregate_costs(&costs, today, month_start, false);
 
         assert!((snapshot.today_cost - 12.0).abs() < 0.001);
         assert!((snapshot.monthly_cost - 17.0).abs() < 0.001);
@@ -193,7 +249,7 @@ mod tests {
         let month_start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
 
         let costs: Vec<DailyCost> = vec![];
-        let snapshot = CostStore::aggregate_costs(&costs, today, month_start);
+        let snapshot = CostStore::aggregate_costs(&costs, today, month_start, false);
 
         assert!((snapshot.today_cost - 0.0).abs() < 0.001);
         assert!((snapshot.monthly_cost - 0.0).abs() < 0.001);

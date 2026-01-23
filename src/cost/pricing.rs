@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use reqwest::header::CONTENT_TYPE;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -268,18 +269,36 @@ impl PricingStore {
             .await
             .context("Failed to fetch pricing from models.dev")?;
 
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
             anyhow::bail!(
                 "models.dev returned status {}: {}",
-                response.status(),
+                status,
                 response.text().await.unwrap_or_default()
             );
         }
 
-        let models: Vec<ModelsDevModel> = response
-            .json()
-            .await
-            .context("Failed to parse models.dev response")?;
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+        let body = response.text().await.unwrap_or_default();
+
+        let models = match parse_models_dev_response(&body) {
+            Ok(models) => models,
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    status = %status,
+                    content_type = %content_type,
+                    body_snippet = %truncate_body(&body, 400),
+                    "Failed to parse models.dev response"
+                );
+                return Err(e).context("Failed to parse models.dev response");
+            }
+        };
 
         let mut prices = Self::embedded_defaults();
 
@@ -324,8 +343,8 @@ impl PricingStore {
         }
 
         // Try stripping date suffix for Claude models (e.g., claude-sonnet-4-20250514 -> claude-sonnet-4)
-        if let Some(base) = normalized.strip_suffix(|c: char| c == '-' || c.is_ascii_digit()) {
-            let base = base.trim_end_matches(|c: char| c == '-' || c.is_ascii_digit());
+        let base = normalized.trim_end_matches(|c: char| c == '-' || c.is_ascii_digit());
+        if base != normalized {
             for (key, price) in &self.prices {
                 if key.starts_with(base) {
                     return Some(price);
@@ -388,17 +407,188 @@ struct ModelsDevPricing {
     cache_write: Option<f64>,
 }
 
+fn normalize_price_to_per_million(value: f64) -> f64 {
+    if value.abs() < 0.01 {
+        value * 1_000_000.0
+    } else {
+        value
+    }
+}
+
 impl ModelsDevModel {
     fn to_pricing(&self) -> Option<ModelPricing> {
         let pricing = self.pricing.as_ref()?;
-        let input = pricing.input? * 1_000_000.0;
-        let output = pricing.output? * 1_000_000.0;
+        let input = normalize_price_to_per_million(pricing.input?);
+        let output = normalize_price_to_per_million(pricing.output?);
 
         let mut model_pricing = ModelPricing::new(input, output);
         if let (Some(write), Some(read)) = (pricing.cache_write, pricing.cache_read) {
-            model_pricing = model_pricing.with_cache(write * 1_000_000.0, read * 1_000_000.0);
+            model_pricing = model_pricing.with_cache(
+                normalize_price_to_per_million(write),
+                normalize_price_to_per_million(read),
+            );
         }
         Some(model_pricing)
+    }
+}
+
+fn parse_models_dev_response(body: &str) -> Result<Vec<ModelsDevModel>> {
+    let json_err = match parse_models_dev_json(body) {
+        Ok(models) => return Ok(models),
+        Err(err) => err,
+    };
+
+    let html_err = match parse_models_dev_html(body) {
+        Ok(models) => return Ok(models),
+        Err(err) => err,
+    };
+    Err(anyhow::anyhow!(
+        "JSON parse failed: {}; HTML parse failed: {}",
+        json_err,
+        html_err
+    ))
+}
+
+fn parse_models_dev_json(body: &str) -> Result<Vec<ModelsDevModel>> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).context("Response was not valid JSON")?;
+
+    if let Some(array) = value.as_array() {
+        return parse_models_from_array(array);
+    }
+
+    for key in ["data", "models"] {
+        if let Some(array) = value.get(key).and_then(|v| v.as_array()) {
+            return parse_models_from_array(array);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "JSON did not contain an array of models"
+    ))
+}
+
+fn parse_models_from_array(array: &[serde_json::Value]) -> Result<Vec<ModelsDevModel>> {
+    let mut models = Vec::with_capacity(array.len());
+    for (idx, item) in array.iter().enumerate() {
+        let model: ModelsDevModel = serde_json::from_value(item.clone())
+            .with_context(|| format!("Failed to decode model at index {}", idx))?;
+        models.push(model);
+    }
+    Ok(models)
+}
+
+fn parse_models_dev_html(body: &str) -> Result<Vec<ModelsDevModel>> {
+    let mut models = Vec::new();
+
+    for row_chunk in body.split("<tr").skip(1) {
+        let Some(row_end) = row_chunk.find("</tr>") else {
+            continue;
+        };
+        let row = &row_chunk[..row_end];
+        let Some(id) = extract_model_id(row) else {
+            continue;
+        };
+
+        let cells = extract_cells(row);
+        if cells.len() < 14 {
+            continue;
+        }
+
+        let input = parse_price_cell(&cells[9]);
+        let output = parse_price_cell(&cells[10]);
+        let cache_read = parse_price_cell(&cells[12]);
+        let cache_write = parse_price_cell(&cells[13]);
+
+        let pricing = ModelsDevPricing {
+            input,
+            output,
+            cache_read,
+            cache_write,
+        };
+
+        models.push(ModelsDevModel {
+            id,
+            pricing: Some(pricing),
+        });
+    }
+
+    if models.is_empty() {
+        anyhow::bail!("No models parsed from HTML response");
+    }
+
+    Ok(models)
+}
+
+fn extract_model_id(row: &str) -> Option<String> {
+    let marker = "model-id-text";
+    let marker_pos = row.find(marker)?;
+    let after_marker = &row[marker_pos..];
+    let start = marker_pos + after_marker.find('>')? + 1;
+    let end = row[start..].find('<')? + start;
+    let id = row[start..end].trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+fn extract_cells(row: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut rest = row;
+
+    while let Some(td_pos) = rest.find("<td") {
+        rest = &rest[td_pos..];
+        let Some(start) = rest.find('>') else {
+            break;
+        };
+        let content_start = start + 1;
+        let Some(end) = rest[content_start..].find("</td>") else {
+            break;
+        };
+        let content_end = content_start + end;
+        let content = &rest[content_start..content_end];
+        let text = strip_tags(content);
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        cells.push(text);
+        rest = &rest[content_end + "</td>".len()..];
+    }
+
+    cells
+}
+
+fn strip_tags(input: &str) -> String {
+    let mut output = String::new();
+    let mut in_tag = false;
+    for c in input.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => output.push(c),
+            _ => {}
+        }
+    }
+    output
+}
+
+fn parse_price_cell(cell: &str) -> Option<f64> {
+    let trimmed = cell.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        return None;
+    }
+
+    let cleaned = trimmed.trim_start_matches('$');
+    cleaned.parse::<f64>().ok()
+}
+
+fn truncate_body(body: &str, limit: usize) -> String {
+    let trimmed = body.trim();
+    let snippet: String = trimmed.chars().take(limit).collect();
+    if snippet.len() == trimmed.len() {
+        snippet
+    } else {
+        format!("{}...", snippet)
     }
 }
 
