@@ -181,7 +181,7 @@ impl UsageProvider for CodexProvider {
         Ok(UsageSnapshot {
             primary,
             secondary,
-            opus: None,
+            carveouts: Vec::new(),
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: None,

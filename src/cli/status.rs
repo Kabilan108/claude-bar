@@ -19,12 +19,18 @@ struct ProviderStatus {
     session: Option<WindowStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     weekly: Option<WindowStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    opus: Option<WindowStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    carveouts: Vec<CarveoutStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     identity: Option<ProviderIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CarveoutStatus {
+    label: String,
+    window: WindowStatus,
 }
 
 #[derive(Serialize)]
@@ -96,7 +102,7 @@ async fn fetch_provider_status(provider: &dyn UsageProvider) -> ProviderStatus {
         return ProviderStatus {
             session: None,
             weekly: None,
-            opus: None,
+            carveouts: Vec::new(),
             identity: None,
             error: Some(provider.credential_error_hint().to_string()),
         };
@@ -107,7 +113,7 @@ async fn fetch_provider_status(provider: &dyn UsageProvider) -> ProviderStatus {
         Err(e) => ProviderStatus {
             session: None,
             weekly: None,
-            opus: None,
+            carveouts: Vec::new(),
             identity: None,
             error: Some(e.to_string()),
         },
@@ -115,10 +121,19 @@ async fn fetch_provider_status(provider: &dyn UsageProvider) -> ProviderStatus {
 }
 
 fn snapshot_to_status(snapshot: UsageSnapshot) -> ProviderStatus {
+    let carveouts = snapshot
+        .carveouts
+        .into_iter()
+        .map(|c| CarveoutStatus {
+            label: c.label,
+            window: window_to_status(&c.window),
+        })
+        .collect();
+
     ProviderStatus {
         session: snapshot.primary.map(|w| window_to_status(&w)),
         weekly: snapshot.secondary.map(|w| window_to_status(&w)),
-        opus: snapshot.opus.map(|w| window_to_status(&w)),
+        carveouts,
         identity: Some(snapshot.identity),
         error: None,
     }
@@ -176,8 +191,8 @@ fn print_text_output(results: &HashMap<String, ProviderStatus>) {
             print_window_line("Weekly", weekly);
         }
 
-        if let Some(opus) = &status.opus {
-            print_window_line("Opus", opus);
+        for carveout in &status.carveouts {
+            print_window_line(&carveout.label, &carveout.window);
         }
     }
 }

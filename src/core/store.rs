@@ -92,7 +92,7 @@ impl UsageStore {
             .await
             .last_fetch
             .get(&provider)
-            .map_or(true, |last| last.elapsed() >= cooldown)
+            .is_none_or(|last| last.elapsed() >= cooldown)
     }
 
     #[allow(dead_code)]
@@ -161,7 +161,7 @@ mod tests {
                 reset_description: None,
             }),
             secondary: None,
-            opus: None,
+            carveouts: Vec::new(),
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: None,

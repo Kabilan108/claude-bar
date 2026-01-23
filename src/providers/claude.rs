@@ -1,4 +1,4 @@
-use crate::core::models::{Provider, ProviderIdentity, RateWindow, UsageSnapshot};
+use crate::core::models::{ModelWindow, Provider, ProviderIdentity, RateWindow, UsageSnapshot};
 use crate::providers::UsageProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -181,17 +181,30 @@ impl UsageProvider for ClaudeProvider {
         let secondary =
             Self::window_to_rate_window(usage.seven_day.as_ref(), 10080, "Weekly quota");
 
-        let opus = Self::window_to_rate_window(usage.seven_day_opus.as_ref(), 10080, "Opus weekly")
-            .or_else(|| {
-                Self::window_to_rate_window(usage.seven_day_sonnet.as_ref(), 10080, "Sonnet weekly")
+        let mut carveouts = Vec::new();
+        if let Some(window) =
+            Self::window_to_rate_window(usage.seven_day_sonnet.as_ref(), 10080, "Sonnet weekly")
+        {
+            carveouts.push(ModelWindow {
+                label: "Sonnet Weekly".to_string(),
+                window,
             });
+        }
+        if let Some(window) =
+            Self::window_to_rate_window(usage.seven_day_opus.as_ref(), 10080, "Opus weekly")
+        {
+            carveouts.push(ModelWindow {
+                label: "Opus Weekly".to_string(),
+                window,
+            });
+        }
 
         let plan = Self::infer_plan_from_tier(credentials.rate_limit_tier.as_deref());
 
         Ok(UsageSnapshot {
             primary,
             secondary,
-            opus,
+            carveouts,
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: None,

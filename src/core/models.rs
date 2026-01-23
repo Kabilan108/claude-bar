@@ -53,7 +53,8 @@ pub struct ProviderIdentity {
 pub struct UsageSnapshot {
     pub primary: Option<RateWindow>,
     pub secondary: Option<RateWindow>,
-    pub opus: Option<RateWindow>,
+    #[serde(default)]
+    pub carveouts: Vec<ModelWindow>,
     pub updated_at: DateTime<Utc>,
     pub identity: ProviderIdentity,
 }
@@ -61,11 +62,19 @@ pub struct UsageSnapshot {
 impl UsageSnapshot {
     #[allow(dead_code)]
     pub fn max_usage(&self) -> f64 {
-        [&self.primary, &self.secondary, &self.opus]
-            .into_iter()
-            .filter_map(|w| w.as_ref().map(|r| r.used_percent))
+        self.primary
+            .iter()
+            .chain(self.secondary.iter())
+            .chain(self.carveouts.iter().map(|c| &c.window))
+            .map(|r| r.used_percent)
             .fold(0.0, f64::max)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelWindow {
+    pub label: String,
+    pub window: RateWindow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +90,10 @@ pub struct CostSnapshot {
     pub monthly_cost: f64,
     pub currency: String,
     pub daily_breakdown: Vec<DailyCost>,
+    #[serde(default)]
+    pub pricing_estimate: bool,
+    #[serde(default)]
+    pub log_error: bool,
 }
 
 impl Default for CostSnapshot {
@@ -90,6 +103,8 @@ impl Default for CostSnapshot {
             monthly_cost: 0.0,
             currency: "USD".to_string(),
             daily_breakdown: Vec::new(),
+            pricing_estimate: false,
+            log_error: false,
         }
     }
 }
@@ -173,7 +188,7 @@ mod tests {
                 resets_at: None,
                 reset_description: Some("Weekly quota".to_string()),
             }),
-            opus: None,
+            carveouts: Vec::new(),
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: Some("user@example.com".to_string()),
@@ -187,7 +202,7 @@ mod tests {
 
         assert!(deserialized.primary.is_some());
         assert!(deserialized.secondary.is_some());
-        assert!(deserialized.opus.is_none());
+        assert!(deserialized.carveouts.is_empty());
         assert_eq!(
             deserialized.identity.email,
             Some("user@example.com".to_string())
@@ -212,6 +227,8 @@ mod tests {
                     cost: 3.95,
                 },
             ],
+            pricing_estimate: false,
+            log_error: false,
         };
 
         let json = serde_json::to_string(&cost).unwrap();
@@ -238,12 +255,15 @@ mod tests {
                 resets_at: None,
                 reset_description: None,
             }),
-            opus: Some(RateWindow {
-                used_percent: 0.45,
-                window_minutes: None,
-                resets_at: None,
-                reset_description: None,
-            }),
+            carveouts: vec![ModelWindow {
+                label: "Opus Weekly".to_string(),
+                window: RateWindow {
+                    used_percent: 0.45,
+                    window_minutes: None,
+                    resets_at: None,
+                    reset_description: None,
+                },
+            }],
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: None,
