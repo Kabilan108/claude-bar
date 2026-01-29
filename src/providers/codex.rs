@@ -23,6 +23,8 @@ struct TokenData {
     #[allow(dead_code)]
     id_token: Option<String>,
     account_id: Option<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +135,15 @@ impl UsageProvider for CodexProvider {
     async fn fetch_usage(&self) -> Result<UsageSnapshot> {
         let credentials = self.load_credentials()?;
 
+        if let Some(expires_at_ms) = credentials.expires_at {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            if now_ms >= expires_at_ms - 60_000 {
+                anyhow::bail!(
+                    "Codex token expired. Waiting for Codex to refresh credentials."
+                );
+            }
+        }
+
         debug!("Fetching Codex usage from {}", API_ENDPOINT);
 
         let client = reqwest::Client::builder()
@@ -196,11 +207,24 @@ impl UsageProvider for CodexProvider {
     }
 
     fn has_valid_credentials(&self) -> bool {
-        self.credentials_path.exists()
+        let Ok(creds) = self.load_credentials() else {
+            return false;
+        };
+        if let Some(expires_at_ms) = creds.expires_at {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            if now_ms >= expires_at_ms - 60_000 {
+                return false;
+            }
+        }
+        true
     }
 
     fn credential_error_hint(&self) -> &'static str {
         "Run `codex` to authenticate"
+    }
+
+    fn credentials_path(&self) -> Option<PathBuf> {
+        Some(self.credentials_path.clone())
     }
 }
 

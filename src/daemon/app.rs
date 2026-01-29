@@ -429,6 +429,23 @@ async fn refresh_provider_with_retry(
     ui_tx: &mpsc::UnboundedSender<UiCommand>,
     provider: Provider,
 ) {
+    let has_creds = registry
+        .get_provider(provider)
+        .is_some_and(|p| p.has_valid_credentials());
+
+    if !has_creds {
+        let hint = registry
+            .get_provider(provider)
+            .map(|p| p.credential_error_hint())
+            .unwrap_or("Check credentials");
+        tracing::debug!(?provider, "Skipping fetch: credentials missing or expired");
+        store
+            .set_error(provider, format!("Token expired or missing. {hint}"))
+            .await;
+        tray.set_error(provider).await;
+        return;
+    }
+
     match registry.fetch_provider(provider).await {
         Ok(snapshot) => {
             {

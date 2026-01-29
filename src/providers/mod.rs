@@ -6,6 +6,7 @@ use crate::core::settings::Settings;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use claude::ClaudeProvider;
@@ -20,6 +21,7 @@ pub trait UsageProvider: Send + Sync {
     fn dashboard_url(&self) -> &'static str;
     fn has_valid_credentials(&self) -> bool;
     fn credential_error_hint(&self) -> &'static str;
+    fn credentials_path(&self) -> Option<PathBuf>;
 }
 
 pub struct ProviderRegistry {
@@ -75,7 +77,13 @@ impl ProviderRegistry {
             .await
     }
 
-    #[allow(dead_code)]
+    pub fn credentials_paths(&self) -> Vec<(Provider, PathBuf)> {
+        self.providers
+            .iter()
+            .filter_map(|p| p.credentials_path().map(|path| (p.identifier(), path)))
+            .collect()
+    }
+
     pub fn get_provider(&self, provider: Provider) -> Option<&dyn UsageProvider> {
         self.providers
             .iter()

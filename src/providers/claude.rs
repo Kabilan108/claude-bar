@@ -24,7 +24,6 @@ struct ClaudeOAuthCredentials {
     access_token: String,
     #[allow(dead_code)]
     refresh_token: Option<String>,
-    #[allow(dead_code)]
     expires_at: Option<i64>,
     #[allow(dead_code)]
     scopes: Option<Vec<String>>,
@@ -139,6 +138,15 @@ impl UsageProvider for ClaudeProvider {
     async fn fetch_usage(&self) -> Result<UsageSnapshot> {
         let credentials = self.load_credentials()?;
 
+        if let Some(expires_at_ms) = credentials.expires_at {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            if now_ms >= expires_at_ms - 60_000 {
+                anyhow::bail!(
+                    "Claude token expired. Waiting for Claude Code to refresh credentials."
+                );
+            }
+        }
+
         debug!("Fetching Claude usage from {}", API_ENDPOINT);
 
         let client = reqwest::Client::builder()
@@ -219,11 +227,24 @@ impl UsageProvider for ClaudeProvider {
     }
 
     fn has_valid_credentials(&self) -> bool {
-        self.credentials_path.exists()
+        let Ok(creds) = self.load_credentials() else {
+            return false;
+        };
+        if let Some(expires_at_ms) = creds.expires_at {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            if now_ms >= expires_at_ms - 60_000 {
+                return false;
+            }
+        }
+        true
     }
 
     fn credential_error_hint(&self) -> &'static str {
         "Run `claude` to authenticate"
+    }
+
+    fn credentials_path(&self) -> Option<PathBuf> {
+        Some(self.credentials_path.clone())
     }
 }
 
