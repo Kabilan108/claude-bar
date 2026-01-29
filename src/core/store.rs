@@ -86,6 +86,10 @@ impl UsageStore {
         let _ = self.update_tx.send(StoreUpdate::ErrorOccurred(provider, error));
     }
 
+    pub async fn clear_last_fetch(&self, provider: Provider) {
+        self.inner.write().await.last_fetch.remove(&provider);
+    }
+
     pub async fn should_refresh(&self, provider: Provider, cooldown: Duration) -> bool {
         self.inner
             .read()

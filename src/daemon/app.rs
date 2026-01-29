@@ -1,3 +1,4 @@
+use crate::core::credentials::CredentialsWatcher;
 use crate::core::models::{CostSnapshot, Provider, UsageSnapshot};
 use crate::core::retry::RetryState;
 use crate::core::settings::SettingsWatcher;
@@ -33,6 +34,9 @@ pub async fn run() -> Result<()> {
 
     let registry = Arc::new(ProviderRegistry::new(&settings));
 
+    let cred_paths = registry.credentials_paths();
+    let (_cred_watcher, cred_change_rx) = CredentialsWatcher::start(cred_paths)?;
+
     tray_manager.start(&settings).await?;
     tokio::spawn(run_animation_loop(Arc::clone(&tray_manager)));
 
@@ -56,6 +60,7 @@ pub async fn run() -> Result<()> {
         Arc::clone(&tray_manager),
         Arc::clone(&retry_states),
         ui_tx.clone(),
+        cred_change_rx,
     ));
 
     tokio::spawn(run_pricing_refresh_loop(Arc::clone(&cost_store)));
@@ -316,6 +321,7 @@ async fn run_polling_loop(
     tray: Arc<TrayManager>,
     retry_states: Arc<RwLock<HashMap<Provider, RetryState>>>,
     ui_tx: mpsc::UnboundedSender<UiCommand>,
+    mut cred_change_rx: mpsc::UnboundedReceiver<Provider>,
 ) {
     for provider in [Provider::Claude, Provider::Codex] {
         retry_states.write().await.insert(provider, RetryState::new());
@@ -336,17 +342,41 @@ async fn run_polling_loop(
     let mut check_interval = tokio::time::interval(Duration::from_secs(1));
 
     loop {
-        check_interval.tick().await;
+        tokio::select! {
+            _ = check_interval.tick() => {
+                for provider in [Provider::Claude, Provider::Codex] {
+                    let should_poll = {
+                        let states = retry_states.read().await;
+                        let state = states.get(&provider).cloned().unwrap_or_default();
+                        let delay = state.current_delay();
+                        store.should_refresh(provider, delay).await
+                    };
 
-        for provider in [Provider::Claude, Provider::Codex] {
-            let should_poll = {
-                let states = retry_states.read().await;
-                let state = states.get(&provider).cloned().unwrap_or_default();
-                let delay = state.current_delay();
-                store.should_refresh(provider, delay).await
-            };
-
-            if should_poll {
+                    if should_poll {
+                        refresh_provider_with_retry(
+                            &registry,
+                            &store,
+                            &tray,
+                            &retry_states,
+                            &ui_tx,
+                            provider,
+                        )
+                        .await;
+                    }
+                }
+            }
+            Some(provider) = cred_change_rx.recv() => {
+                tracing::info!(
+                    ?provider,
+                    "Credentials changed on disk, resetting retry state"
+                );
+                {
+                    let mut states = retry_states.write().await;
+                    if let Some(state) = states.get_mut(&provider) {
+                        state.record_success();
+                    }
+                }
+                store.clear_last_fetch(provider).await;
                 refresh_provider_with_retry(
                     &registry,
                     &store,
