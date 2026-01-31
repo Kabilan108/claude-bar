@@ -62,6 +62,9 @@ async-trait = "0.1"
 
 # URL opening
 open = "5"
+base64 = "0.22"
+global-hotkey = "0.5"
+portable-pty = "0.9"
 
 [profile.release]
 lto = true

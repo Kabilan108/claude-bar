@@ -2,13 +2,15 @@ use crate::core::models::{Provider, ProviderIdentity, RateWindow, UsageSnapshot}
 use crate::providers::UsageProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use serde_json::Value;
 use std::path::PathBuf;
 use tracing::{debug, warn};
 
 const DEFAULT_CREDENTIALS_PATH: &str = ".codex/auth.json";
-const API_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
+const DEFAULT_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 
 #[derive(Debug, Deserialize)]
 struct CredentialsFile {
@@ -105,14 +107,151 @@ impl CodexProvider {
     fn format_plan_type(plan_type: Option<&str>) -> Option<String> {
         plan_type.map(|p| {
             match p.to_lowercase().as_str() {
+                "guest" => "ChatGPT Guest".to_string(),
                 "plus" => "ChatGPT Plus".to_string(),
                 "pro" => "ChatGPT Pro".to_string(),
                 "team" => "ChatGPT Team".to_string(),
+                "business" => "ChatGPT Business".to_string(),
+                "education" => "ChatGPT Education".to_string(),
+                "free_workspace" => "ChatGPT Free Workspace".to_string(),
+                "go" => "ChatGPT Go".to_string(),
+                "k12" => "ChatGPT K12".to_string(),
+                "edu" => "ChatGPT EDU".to_string(),
+                "quorum" => "ChatGPT Quorum".to_string(),
                 "enterprise" => "ChatGPT Enterprise".to_string(),
                 "free" => "ChatGPT Free".to_string(),
                 _ => format!("ChatGPT {}", p),
             }
         })
+    }
+
+    fn normalize_plan_label(plan: &str) -> String {
+        let trimmed = plan.trim();
+        if trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+        if trimmed.to_lowercase().starts_with("chatgpt") {
+            return trimmed.to_string();
+        }
+        Self::format_plan_type(Some(trimmed)).unwrap_or_else(|| trimmed.to_string())
+    }
+
+    fn resolve_usage_url() -> String {
+        let base = Self::resolve_chatgpt_base_url();
+        let normalized = Self::normalize_chatgpt_base_url(&base);
+        let path = if normalized.contains("/backend-api") {
+            "/wham/usage"
+        } else {
+            "/api/codex/usage"
+        };
+        format!("{}{}", normalized, path)
+    }
+
+    fn resolve_chatgpt_base_url() -> String {
+        if let Some(contents) = Self::load_config_contents() {
+            if let Some(parsed) = Self::parse_chatgpt_base_url(&contents) {
+                return parsed;
+            }
+        }
+        DEFAULT_CHATGPT_BASE_URL.to_string()
+    }
+
+    fn normalize_chatgpt_base_url(value: &str) -> String {
+        let mut trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            trimmed = DEFAULT_CHATGPT_BASE_URL.to_string();
+        }
+        while trimmed.ends_with('/') {
+            trimmed.pop();
+        }
+        if (trimmed.starts_with("https://chatgpt.com")
+            || trimmed.starts_with("https://chat.openai.com"))
+            && !trimmed.contains("/backend-api")
+        {
+            trimmed.push_str("/backend-api");
+        }
+        trimmed
+    }
+
+    fn parse_chatgpt_base_url(contents: &str) -> Option<String> {
+        for raw_line in contents.lines() {
+            let line = raw_line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(2, '=');
+            let key = parts.next()?.trim();
+            let value = parts.next()?.trim();
+            if key != "chatgpt_base_url" {
+                continue;
+            }
+            let mut cleaned = value.to_string();
+            if (cleaned.starts_with('"') && cleaned.ends_with('"'))
+                || (cleaned.starts_with('\'') && cleaned.ends_with('\''))
+            {
+                cleaned = cleaned.trim_matches(&['"', '\''][..]).to_string();
+            }
+            let cleaned = cleaned.trim();
+            if cleaned.is_empty() {
+                return None;
+            }
+            return Some(cleaned.to_string());
+        }
+        None
+    }
+
+    fn load_config_contents() -> Option<String> {
+        let root = std::env::var("CODEX_HOME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|p| p.join(".codex")))?;
+        let path = root.join("config.toml");
+        std::fs::read_to_string(path).ok()
+    }
+
+    fn decode_jwt_payload(token: &str) -> Option<Value> {
+        let mut parts = token.split('.');
+        let _header = parts.next()?;
+        let payload = parts.next()?;
+        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload.as_bytes())
+            .ok()?;
+        serde_json::from_slice(&data).ok()
+    }
+
+    fn resolve_account_email(id_token: Option<&str>) -> Option<String> {
+        let payload = Self::decode_jwt_payload(id_token?)?;
+        let profile = payload
+            .get("https://api.openai.com/profile")
+            .and_then(|v| v.as_object());
+        let email = payload
+            .get("email")
+            .and_then(|v| v.as_str())
+            .or_else(|| profile.and_then(|p| p.get("email")).and_then(|v| v.as_str()))?;
+        let trimmed = email.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    fn resolve_plan_from_jwt(id_token: Option<&str>) -> Option<String> {
+        let payload = Self::decode_jwt_payload(id_token?)?;
+        let auth = payload
+            .get("https://api.openai.com/auth")
+            .and_then(|v| v.as_object());
+        let plan = auth
+            .and_then(|a| a.get("chatgpt_plan_type"))
+            .and_then(|v| v.as_str())
+            .or_else(|| payload.get("chatgpt_plan_type").and_then(|v| v.as_str()))?;
+        let trimmed = plan.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
     }
 }
 
@@ -144,7 +283,8 @@ impl UsageProvider for CodexProvider {
             }
         }
 
-        debug!("Fetching Codex usage from {}", API_ENDPOINT);
+        let usage_url = Self::resolve_usage_url();
+        debug!("Fetching Codex usage from {}", usage_url);
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -152,7 +292,7 @@ impl UsageProvider for CodexProvider {
             .context("Failed to build HTTP client")?;
 
         let mut request = client
-            .get(API_ENDPOINT)
+            .get(&usage_url)
             .header("Authorization", format!("Bearer {}", credentials.access_token))
             .header("Accept", "application/json")
             .header("User-Agent", "claude-bar");
@@ -187,23 +327,34 @@ impl UsageProvider for CodexProvider {
             )
         });
 
-        let plan = Self::format_plan_type(usage.plan_type.as_deref());
+        let plan = usage
+            .plan_type
+            .as_deref()
+            .map(Self::normalize_plan_label)
+            .or_else(|| {
+                Self::resolve_plan_from_jwt(credentials.id_token.as_deref())
+                    .map(|p| Self::normalize_plan_label(&p))
+            });
+        let email = Self::resolve_account_email(credentials.id_token.as_deref());
 
         Ok(UsageSnapshot {
             primary,
             secondary,
+            tertiary: None,
+            provider_cost: None,
             carveouts: Vec::new(),
             updated_at: Utc::now(),
             identity: ProviderIdentity {
-                email: None,
+                email,
                 organization: None,
-                plan,
+                plan: plan.clone(),
+                login_method: plan,
             },
         })
     }
 
     fn dashboard_url(&self) -> &'static str {
-        "https://chatgpt.com/"
+        "https://chatgpt.com/codex/settings/usage"
     }
 
     fn has_valid_credentials(&self) -> bool {
@@ -362,7 +513,10 @@ mod tests {
         let provider = CodexProvider::new();
         assert_eq!(provider.name(), "Codex");
         assert_eq!(provider.identifier(), Provider::Codex);
-        assert_eq!(provider.dashboard_url(), "https://chatgpt.com/");
+        assert_eq!(
+            provider.dashboard_url(),
+            "https://chatgpt.com/codex/settings/usage"
+        );
         assert_eq!(provider.credential_error_hint(), "Run `codex` to authenticate");
     }
 }

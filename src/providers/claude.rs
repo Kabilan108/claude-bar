@@ -1,4 +1,6 @@
-use crate::core::models::{ModelWindow, Provider, ProviderIdentity, RateWindow, UsageSnapshot};
+use crate::core::models::{
+    ModelWindow, Provider, ProviderCostSnapshot, ProviderIdentity, RateWindow, UsageSnapshot,
+};
 use crate::providers::UsageProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -38,12 +40,25 @@ struct OAuthUsageResponse {
     seven_day_sonnet: Option<UsageWindow>,
     #[serde(rename = "seven_day_opus")]
     seven_day_opus: Option<UsageWindow>,
+    #[serde(rename = "extra_usage")]
+    extra_usage: Option<OAuthExtraUsage>,
 }
 
 #[derive(Debug, Deserialize)]
 struct UsageWindow {
-    utilization: f64,
+    utilization: Option<f64>,
     resets_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OAuthExtraUsage {
+    #[serde(rename = "is_enabled")]
+    is_enabled: Option<bool>,
+    #[serde(rename = "monthly_limit")]
+    monthly_limit: Option<f64>,
+    #[serde(rename = "used_credits")]
+    used_credits: Option<f64>,
+    currency: Option<String>,
 }
 
 pub struct ClaudeProvider {
@@ -93,29 +108,84 @@ impl ClaudeProvider {
         window_minutes: i32,
         description: &str,
     ) -> Option<RateWindow> {
-        window.map(|w| RateWindow {
-            used_percent: w.utilization / 100.0,
-            window_minutes: Some(window_minutes),
-            resets_at: Self::parse_reset_time(w.resets_at.as_deref()),
-            reset_description: Some(description.to_string()),
+        window.and_then(|w| {
+            let utilization = w.utilization?;
+            Some(RateWindow {
+                used_percent: utilization / 100.0,
+                window_minutes: Some(window_minutes),
+                resets_at: Self::parse_reset_time(w.resets_at.as_deref()),
+                reset_description: Some(description.to_string()),
+            })
         })
     }
 
     fn infer_plan_from_tier(tier: Option<&str>) -> Option<String> {
-        tier.map(|t| {
-            let lower = t.to_lowercase();
-            if lower.contains("max") {
-                "Claude Max".to_string()
-            } else if lower.contains("enterprise") {
-                "Claude Enterprise".to_string()
-            } else if lower.contains("team") {
-                "Claude Team".to_string()
-            } else if lower.contains("pro") {
-                "Claude Pro".to_string()
-            } else {
-                "Claude".to_string()
-            }
+        let tier = tier.unwrap_or("").to_lowercase();
+        if tier.contains("max") {
+            return Some("Claude Max".to_string());
+        }
+        if tier.contains("enterprise") {
+            return Some("Claude Enterprise".to_string());
+        }
+        if tier.contains("team") {
+            return Some("Claude Team".to_string());
+        }
+        if tier.contains("pro") {
+            return Some("Claude Pro".to_string());
+        }
+        None
+    }
+
+    fn map_extra_usage(extra: &Option<OAuthExtraUsage>, plan: Option<&str>) -> Option<ProviderCostSnapshot> {
+        let extra = extra.as_ref()?;
+        if extra.is_enabled != Some(true) {
+            return None;
+        }
+        let used = extra.used_credits?;
+        let limit = extra.monthly_limit?;
+        let currency = extra.currency.as_deref().unwrap_or("USD").trim();
+        let currency_code = if currency.is_empty() { "USD" } else { currency };
+
+        let normalized = Self::normalize_extra_usage_amounts(used, limit);
+        let snapshot = ProviderCostSnapshot {
+            used: normalized.0,
+            limit: normalized.1,
+            currency_code: currency_code.to_string(),
+            period: Some("Monthly".to_string()),
+            resets_at: None,
+            updated_at: Utc::now(),
+        };
+        Self::rescale_extra_usage_if_needed(snapshot, plan)
+    }
+
+    fn normalize_extra_usage_amounts(used: f64, limit: f64) -> (f64, f64) {
+        (used / 100.0, limit / 100.0)
+    }
+
+    fn rescale_extra_usage_if_needed(
+        snapshot: ProviderCostSnapshot,
+        plan: Option<&str>,
+    ) -> Option<ProviderCostSnapshot> {
+        let threshold = Self::extra_usage_rescale_threshold(plan)?;
+        if snapshot.limit < threshold {
+            return Some(snapshot);
+        }
+        Some(ProviderCostSnapshot {
+            used: snapshot.used / 100.0,
+            limit: snapshot.limit / 100.0,
+            currency_code: snapshot.currency_code,
+            period: snapshot.period,
+            resets_at: snapshot.resets_at,
+            updated_at: snapshot.updated_at,
         })
+    }
+
+    fn extra_usage_rescale_threshold(plan: Option<&str>) -> Option<f64> {
+        let normalized = plan.unwrap_or("").trim().to_lowercase();
+        if normalized.contains("enterprise") {
+            return None;
+        }
+        Some(1000.0)
     }
 }
 
@@ -189,6 +259,13 @@ impl UsageProvider for ClaudeProvider {
         let secondary =
             Self::window_to_rate_window(usage.seven_day.as_ref(), 10080, "Weekly quota");
 
+        let model_specific = usage
+            .seven_day_sonnet
+            .as_ref()
+            .or(usage.seven_day_opus.as_ref());
+        let tertiary =
+            Self::window_to_rate_window(model_specific, 10080, "Model weekly");
+
         let mut carveouts = Vec::new();
         if let Some(window) =
             Self::window_to_rate_window(usage.seven_day_sonnet.as_ref(), 10080, "Sonnet weekly")
@@ -208,22 +285,26 @@ impl UsageProvider for ClaudeProvider {
         }
 
         let plan = Self::infer_plan_from_tier(credentials.rate_limit_tier.as_deref());
+        let provider_cost = Self::map_extra_usage(&usage.extra_usage, plan.as_deref());
 
         Ok(UsageSnapshot {
             primary,
             secondary,
+            tertiary,
+            provider_cost,
             carveouts,
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: None,
                 organization: None,
-                plan,
+                plan: plan.clone(),
+                login_method: plan,
             },
         })
     }
 
     fn dashboard_url(&self) -> &'static str {
-        "https://console.anthropic.com/"
+        "https://console.anthropic.com/settings/billing"
     }
 
     fn has_valid_credentials(&self) -> bool {
@@ -297,11 +378,11 @@ mod tests {
 
         assert!(usage.five_hour.is_some());
         let five_hour = usage.five_hour.as_ref().unwrap();
-        assert!((five_hour.utilization - 45.5).abs() < f64::EPSILON);
+        assert_eq!(five_hour.utilization, Some(45.5));
 
         assert!(usage.seven_day.is_some());
         let seven_day = usage.seven_day.as_ref().unwrap();
-        assert!((seven_day.utilization - 32.0).abs() < f64::EPSILON);
+        assert_eq!(seven_day.utilization, Some(32.0));
 
         assert!(usage.seven_day_opus.is_some());
     }
@@ -327,7 +408,7 @@ mod tests {
     #[test]
     fn test_window_to_rate_window() {
         let window = UsageWindow {
-            utilization: 78.5,
+            utilization: Some(78.5),
             resets_at: Some("2026-01-19T15:30:00Z".to_string()),
         };
 
@@ -362,9 +443,41 @@ mod tests {
         );
         assert_eq!(
             ClaudeProvider::infer_plan_from_tier(Some("something_else")),
-            Some("Claude".to_string())
+            None
         );
         assert_eq!(ClaudeProvider::infer_plan_from_tier(None), None);
+    }
+
+    #[test]
+    fn test_map_extra_usage_normalization() {
+        let extra = OAuthExtraUsage {
+            is_enabled: Some(true),
+            monthly_limit: Some(12345.0),
+            used_credits: Some(2345.0),
+            currency: Some("USD".to_string()),
+        };
+
+        let snapshot =
+            ClaudeProvider::map_extra_usage(&Some(extra), Some("Claude Pro")).unwrap();
+        assert!((snapshot.used - 23.45).abs() < 0.001);
+        assert!((snapshot.limit - 123.45).abs() < 0.001);
+        assert_eq!(snapshot.currency_code, "USD");
+        assert_eq!(snapshot.period.as_deref(), Some("Monthly"));
+    }
+
+    #[test]
+    fn test_map_extra_usage_rescale() {
+        let extra = OAuthExtraUsage {
+            is_enabled: Some(true),
+            monthly_limit: Some(250_000.0),
+            used_credits: Some(50_000.0),
+            currency: Some("USD".to_string()),
+        };
+
+        let snapshot =
+            ClaudeProvider::map_extra_usage(&Some(extra), Some("Claude Pro")).unwrap();
+        assert!((snapshot.used - 5.0).abs() < 0.001);
+        assert!((snapshot.limit - 25.0).abs() < 0.001);
     }
 
     #[test]
@@ -372,7 +485,10 @@ mod tests {
         let provider = ClaudeProvider::new();
         assert_eq!(provider.name(), "Claude Code");
         assert_eq!(provider.identifier(), Provider::Claude);
-        assert_eq!(provider.dashboard_url(), "https://console.anthropic.com/");
+        assert_eq!(
+            provider.dashboard_url(),
+            "https://console.anthropic.com/settings/billing"
+        );
         assert_eq!(provider.credential_error_hint(), "Run `claude` to authenticate");
     }
 }
