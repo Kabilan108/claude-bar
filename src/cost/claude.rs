@@ -1,6 +1,5 @@
-use crate::core::models::DailyCost;
 use crate::cost::pricing::PricingStore;
-use crate::cost::scanner::{aggregate_entries, CostScanner, LogEntry};
+use crate::cost::scanner::{CostScanner, LogEntry};
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
 use serde::Deserialize;
@@ -11,11 +10,10 @@ use std::path::{Path, PathBuf};
 
 pub struct ClaudeCostScanner {
     project_dirs: Vec<PathBuf>,
-    pricing: PricingStore,
 }
 
 impl ClaudeCostScanner {
-    pub fn new(pricing: PricingStore) -> Self {
+    pub fn new() -> Self {
         let mut project_dirs = Vec::new();
 
         if let Some(home) = dirs::home_dir() {
@@ -26,10 +24,7 @@ impl ClaudeCostScanner {
             project_dirs.push(config.join("claude/projects"));
         }
 
-        Self {
-            project_dirs,
-            pricing,
-        }
+        Self { project_dirs }
     }
 
     fn find_jsonl_files(&self, since: NaiveDate, until: NaiveDate) -> Vec<PathBuf> {
@@ -170,12 +165,12 @@ impl ClaudeCostScanner {
 
 impl Default for ClaudeCostScanner {
     fn default() -> Self {
-        Self::new(PricingStore::default())
+        Self::new()
     }
 }
 
 impl CostScanner for ClaudeCostScanner {
-    fn scan(&self, since: NaiveDate, until: NaiveDate) -> Result<Vec<DailyCost>> {
+    fn scan_entries(&self, since: NaiveDate, until: NaiveDate) -> Result<Vec<LogEntry>> {
         tracing::debug!(dirs = ?self.project_dirs, "Scanning Claude project directories");
 
         let files = self.find_jsonl_files(since, until);
@@ -193,7 +188,7 @@ impl CostScanner for ClaudeCostScanner {
             .flatten()
             .collect();
 
-        Ok(aggregate_entries(entries, &self.pricing))
+        Ok(entries)
     }
 }
 

@@ -17,8 +17,15 @@ impl Provider {
 
     pub fn dashboard_url(&self) -> &'static str {
         match self {
-            Provider::Claude => "https://console.anthropic.com/",
-            Provider::Codex => "https://chatgpt.com/",
+            Provider::Claude => "https://console.anthropic.com/settings/billing",
+            Provider::Codex => "https://chatgpt.com/codex/settings/usage",
+        }
+    }
+
+    pub fn status_url(&self) -> &'static str {
+        match self {
+            Provider::Claude => "https://status.claude.com/",
+            Provider::Codex => "https://status.openai.com/",
         }
     }
 }
@@ -47,12 +54,17 @@ pub struct ProviderIdentity {
     pub email: Option<String>,
     pub organization: Option<String>,
     pub plan: Option<String>,
+    pub login_method: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageSnapshot {
     pub primary: Option<RateWindow>,
     pub secondary: Option<RateWindow>,
+    #[serde(default)]
+    pub tertiary: Option<RateWindow>,
+    #[serde(default)]
+    pub provider_cost: Option<ProviderCostSnapshot>,
     #[serde(default)]
     pub carveouts: Vec<ModelWindow>,
     pub updated_at: DateTime<Utc>,
@@ -65,6 +77,7 @@ impl UsageSnapshot {
         self.primary
             .iter()
             .chain(self.secondary.iter())
+            .chain(self.tertiary.iter())
             .chain(self.carveouts.iter().map(|c| &c.window))
             .map(|r| r.used_percent)
             .fold(0.0, f64::max)
@@ -75,6 +88,33 @@ impl UsageSnapshot {
 pub struct ModelWindow {
     pub label: String,
     pub window: RateWindow,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCostSnapshot {
+    pub used: f64,
+    pub limit: f64,
+    pub currency_code: String,
+    pub period: Option<String>,
+    pub resets_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostUsageTokenSnapshot {
+    pub session_tokens: Option<u64>,
+    pub session_cost_usd: Option<f64>,
+    pub last_30_days_tokens: Option<u64>,
+    pub last_30_days_cost_usd: Option<f64>,
+    pub daily: Vec<DailyTokenUsage>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyTokenUsage {
+    pub date: NaiveDate,
+    pub total_tokens: Option<u64>,
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,12 +228,15 @@ mod tests {
                 resets_at: None,
                 reset_description: Some("Weekly quota".to_string()),
             }),
+            tertiary: None,
+            provider_cost: None,
             carveouts: Vec::new(),
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: Some("user@example.com".to_string()),
                 organization: Some("Acme Corp".to_string()),
                 plan: Some("Pro".to_string()),
+                login_method: Some("OAuth".to_string()),
             },
         };
 
@@ -255,6 +298,8 @@ mod tests {
                 resets_at: None,
                 reset_description: None,
             }),
+            tertiary: None,
+            provider_cost: None,
             carveouts: vec![ModelWindow {
                 label: "Opus Weekly".to_string(),
                 window: RateWindow {
@@ -269,6 +314,7 @@ mod tests {
                 email: None,
                 organization: None,
                 plan: None,
+                login_method: None,
             },
         };
 

@@ -1,8 +1,8 @@
-use crate::core::models::{CostSnapshot, DailyCost, Provider};
+use crate::core::models::{CostSnapshot, CostUsageTokenSnapshot, DailyCost, DailyTokenUsage, Provider};
 use crate::cost::claude::ClaudeCostScanner;
 use crate::cost::codex::CodexCostScanner;
 use crate::cost::pricing::PricingStore;
-use crate::cost::scanner::CostScanner;
+use crate::cost::scanner::{aggregate_entries, aggregate_token_usage, CostScanner};
 use anyhow::Result;
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use std::collections::HashMap;
@@ -12,6 +12,7 @@ pub struct CostStore {
     codex_scanner: CodexCostScanner,
     pricing: PricingStore,
     cached_costs: HashMap<Provider, CostSnapshot>,
+    cached_tokens: HashMap<Provider, CostUsageTokenSnapshot>,
     pricing_failed: bool,
     pricing_successful: bool,
 }
@@ -29,10 +30,11 @@ impl CostStore {
         let pricing_successful = pricing.last_fetch().is_some();
 
         Self {
-            claude_scanner: ClaudeCostScanner::new(pricing.clone()),
-            codex_scanner: CodexCostScanner::new(pricing.clone()),
+            claude_scanner: ClaudeCostScanner::new(),
+            codex_scanner: CodexCostScanner::new(),
             pricing,
             cached_costs: HashMap::new(),
+            cached_tokens: HashMap::new(),
             pricing_failed: !pricing_successful,
             pricing_successful,
         }
@@ -50,8 +52,8 @@ impl CostStore {
                 self.pricing.save_to_cache()?;
 
                 // Update scanners with new pricing
-                self.claude_scanner = ClaudeCostScanner::new(self.pricing.clone());
-                self.codex_scanner = CodexCostScanner::new(self.pricing.clone());
+                self.claude_scanner = ClaudeCostScanner::new();
+                self.codex_scanner = CodexCostScanner::new();
 
                 self.pricing_successful = true;
                 self.pricing_failed = false;
@@ -68,7 +70,7 @@ impl CostStore {
         }
     }
 
-    pub fn scan_all(&mut self) -> HashMap<Provider, CostSnapshot> {
+    pub fn scan_all(&mut self) -> HashMap<Provider, CostScanResult> {
         let today = Local::now().date_naive();
         let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
         let since = month_start - Duration::days(30);
@@ -80,16 +82,28 @@ impl CostStore {
 
         let mut results = HashMap::new();
         for (provider, scanner) in scanners {
-            match scanner.scan(since, today) {
-                Ok(costs) => {
-                    let snapshot =
+            match scanner.scan_entries(since, today) {
+                Ok(entries) => {
+                    let costs = aggregate_entries(&entries, &self.pricing);
+                    let tokens = aggregate_token_usage(&entries, &self.pricing);
+                    let cost_snapshot =
                         Self::aggregate_costs(&costs, today, month_start, self.pricing_failed);
-                    self.cached_costs.insert(provider, snapshot.clone());
-                    results.insert(provider, snapshot);
+                    let token_snapshot =
+                        Self::aggregate_tokens(&tokens, today, self.pricing_failed);
+                    self.cached_costs.insert(provider, cost_snapshot.clone());
+                    self.cached_tokens
+                        .insert(provider, token_snapshot.clone());
+                    results.insert(
+                        provider,
+                        CostScanResult {
+                            cost: cost_snapshot,
+                            tokens: token_snapshot,
+                        },
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(?provider, error = %e, "Failed to scan costs");
-                    let snapshot = self
+                    let cost_snapshot = self
                         .cached_costs
                         .get(&provider)
                         .cloned()
@@ -98,18 +112,38 @@ impl CostStore {
                             log_error: true,
                             ..CostSnapshot::default()
                         });
-                    let snapshot = mark_log_error(snapshot, self.pricing_failed);
-                    self.cached_costs.insert(provider, snapshot.clone());
-                    results.insert(provider, snapshot);
+                    let cost_snapshot = mark_log_error(cost_snapshot, self.pricing_failed);
+                    let token_snapshot = self
+                        .cached_tokens
+                        .get(&provider)
+                        .cloned()
+                        .unwrap_or_else(|| CostUsageTokenSnapshot {
+                            session_tokens: None,
+                            session_cost_usd: None,
+                            last_30_days_tokens: None,
+                            last_30_days_cost_usd: None,
+                            daily: Vec::new(),
+                            updated_at: chrono::Utc::now(),
+                        });
+                    self.cached_costs.insert(provider, cost_snapshot.clone());
+                    self.cached_tokens
+                        .insert(provider, token_snapshot.clone());
+                    results.insert(
+                        provider,
+                        CostScanResult {
+                            cost: cost_snapshot,
+                            tokens: token_snapshot,
+                        },
+                    );
                 }
-            }
+            };
         }
 
         results
     }
 
     #[allow(dead_code)]
-    pub fn scan_provider(&mut self, provider: Provider) -> Option<CostSnapshot> {
+    pub fn scan_provider(&mut self, provider: Provider) -> Option<CostScanResult> {
         let today = Local::now().date_naive();
         let month_start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
         let since = month_start - Duration::days(30);
@@ -119,16 +153,24 @@ impl CostStore {
             Provider::Codex => &self.codex_scanner,
         };
 
-        match scanner.scan(since, today) {
-            Ok(costs) => {
-                let snapshot =
+        match scanner.scan_entries(since, today) {
+            Ok(entries) => {
+                let costs = aggregate_entries(&entries, &self.pricing);
+                let tokens = aggregate_token_usage(&entries, &self.pricing);
+                let cost_snapshot =
                     Self::aggregate_costs(&costs, today, month_start, self.pricing_failed);
-                self.cached_costs.insert(provider, snapshot.clone());
-                Some(snapshot)
+                let token_snapshot = Self::aggregate_tokens(&tokens, today, self.pricing_failed);
+                self.cached_costs.insert(provider, cost_snapshot.clone());
+                self.cached_tokens
+                    .insert(provider, token_snapshot.clone());
+                Some(CostScanResult {
+                    cost: cost_snapshot,
+                    tokens: token_snapshot,
+                })
             }
             Err(e) => {
                 tracing::warn!(?provider, error = %e, "Failed to scan costs");
-                let snapshot = self
+                let cost_snapshot = self
                     .cached_costs
                     .get(&provider)
                     .cloned()
@@ -137,9 +179,26 @@ impl CostStore {
                         log_error: true,
                         ..CostSnapshot::default()
                     });
-                let snapshot = mark_log_error(snapshot, self.pricing_failed);
-                self.cached_costs.insert(provider, snapshot.clone());
-                Some(snapshot)
+                let cost_snapshot = mark_log_error(cost_snapshot, self.pricing_failed);
+                let token_snapshot = self
+                    .cached_tokens
+                    .get(&provider)
+                    .cloned()
+                    .unwrap_or_else(|| CostUsageTokenSnapshot {
+                        session_tokens: None,
+                        session_cost_usd: None,
+                        last_30_days_tokens: None,
+                        last_30_days_cost_usd: None,
+                        daily: Vec::new(),
+                        updated_at: chrono::Utc::now(),
+                    });
+                self.cached_costs.insert(provider, cost_snapshot.clone());
+                self.cached_tokens
+                    .insert(provider, token_snapshot.clone());
+                Some(CostScanResult {
+                    cost: cost_snapshot,
+                    tokens: token_snapshot,
+                })
             }
         }
     }
@@ -147,6 +206,11 @@ impl CostStore {
     #[allow(dead_code)]
     pub fn get_cached(&self, provider: Provider) -> Option<&CostSnapshot> {
         self.cached_costs.get(&provider)
+    }
+
+    #[allow(dead_code)]
+    pub fn get_cached_tokens(&self, provider: Provider) -> Option<&CostUsageTokenSnapshot> {
+        self.cached_tokens.get(&provider)
     }
 
     #[allow(dead_code)]
@@ -187,6 +251,51 @@ impl CostStore {
             log_error: false,
         }
     }
+
+    fn aggregate_tokens(
+        daily: &[DailyTokenUsage],
+        today: NaiveDate,
+        _pricing_estimate: bool,
+    ) -> CostUsageTokenSnapshot {
+        let cutoff = today - chrono::Duration::days(29);
+        let filtered: Vec<DailyTokenUsage> = daily
+            .iter()
+            .filter(|d| d.date >= cutoff && d.date <= today)
+            .cloned()
+            .collect();
+
+        let current_day = filtered
+            .iter()
+            .max_by_key(|d| d.date)
+            .filter(|d| d.date == today)
+            .or_else(|| filtered.iter().max_by_key(|d| d.date));
+
+        let last_30_days_cost_usd = filtered
+            .iter()
+            .filter_map(|d| d.cost_usd)
+            .sum::<f64>();
+        let last_30_days_tokens = filtered
+            .iter()
+            .filter_map(|d| d.total_tokens)
+            .sum::<u64>();
+
+        CostUsageTokenSnapshot {
+            session_tokens: current_day.and_then(|d| d.total_tokens),
+            session_cost_usd: current_day.and_then(|d| d.cost_usd),
+            last_30_days_tokens: if last_30_days_tokens > 0 {
+                Some(last_30_days_tokens)
+            } else {
+                None
+            },
+            last_30_days_cost_usd: if last_30_days_cost_usd > 0.0 {
+                Some(normalize_cost(last_30_days_cost_usd))
+            } else {
+                None
+            },
+            daily: filtered,
+            updated_at: chrono::Utc::now(),
+        }
+    }
 }
 
 fn normalize_cost(value: f64) -> f64 {
@@ -207,6 +316,12 @@ impl Default for CostStore {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CostScanResult {
+    pub cost: CostSnapshot,
+    pub tokens: CostUsageTokenSnapshot,
 }
 
 #[cfg(test)]

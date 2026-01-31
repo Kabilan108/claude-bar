@@ -1,5 +1,5 @@
-use crate::core::models::{CostSnapshot, DailyCost, Provider};
-use crate::cost::CostStore;
+use crate::core::models::{DailyCost, Provider};
+use crate::cost::{CostScanResult, CostStore};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -46,11 +46,12 @@ pub async fn run(json: bool, days: u32) -> Result<()> {
     Ok(())
 }
 
-fn build_json_output(costs: HashMap<Provider, CostSnapshot>, days: u32) -> CostOutput {
+fn build_json_output(costs: HashMap<Provider, CostScanResult>, days: u32) -> CostOutput {
     let providers = costs
         .into_iter()
-        .map(|(provider, snapshot)| {
+        .map(|(provider, result)| {
             let name = provider.name().to_string();
+            let snapshot = result.cost;
             let summary = CostSummary {
                 today: snapshot.today_cost,
                 monthly: snapshot.monthly_cost,
@@ -76,7 +77,7 @@ fn build_json_output(costs: HashMap<Provider, CostSnapshot>, days: u32) -> CostO
     }
 }
 
-fn print_text_output(costs: &HashMap<Provider, CostSnapshot>) {
+fn print_text_output(costs: &HashMap<Provider, CostScanResult>) {
     if costs.is_empty() {
         println!("No cost data found.");
         return;
@@ -87,12 +88,13 @@ fn print_text_output(costs: &HashMap<Provider, CostSnapshot>) {
             println!();
         }
 
+        let cost = &snapshot.cost;
         println!("{}", provider.name());
-        println!("  Today:      ${:.2}", snapshot.today_cost);
-        println!("  This month: ${:.2}", snapshot.monthly_cost);
+        println!("  Today:      ${:.2}", cost.today_cost);
+        println!("  This month: ${:.2}", cost.monthly_cost);
 
-        if !snapshot.daily_breakdown.is_empty() {
-            print_daily_summary(&snapshot.daily_breakdown);
+        if !cost.daily_breakdown.is_empty() {
+            print_daily_summary(&cost.daily_breakdown);
         }
     }
 }

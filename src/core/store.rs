@@ -1,4 +1,4 @@
-use crate::core::models::{CostSnapshot, Provider, UsageSnapshot};
+use crate::core::models::{CostSnapshot, CostUsageTokenSnapshot, Provider, UsageSnapshot};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,6 +9,7 @@ use tokio::sync::{broadcast, RwLock};
 pub enum StoreUpdate {
     UsageUpdated(Provider),
     CostUpdated(Provider),
+    TokenUsageUpdated(Provider),
     ErrorOccurred(Provider, String),
     ErrorCleared(Provider),
 }
@@ -17,6 +18,7 @@ pub enum StoreUpdate {
 struct StoreInner {
     snapshots: HashMap<Provider, UsageSnapshot>,
     costs: HashMap<Provider, CostSnapshot>,
+    token_snapshots: HashMap<Provider, CostUsageTokenSnapshot>,
     errors: HashMap<Provider, String>,
     last_fetch: HashMap<Provider, Instant>,
     #[allow(dead_code)]
@@ -51,6 +53,15 @@ impl UsageStore {
         self.inner.read().await.costs.get(&provider).cloned()
     }
 
+    pub async fn get_token_snapshot(&self, provider: Provider) -> Option<CostUsageTokenSnapshot> {
+        self.inner
+            .read()
+            .await
+            .token_snapshots
+            .get(&provider)
+            .cloned()
+    }
+
     pub async fn get_error(&self, provider: Provider) -> Option<String> {
         self.inner.read().await.errors.get(&provider).cloned()
     }
@@ -74,6 +85,16 @@ impl UsageStore {
     pub async fn update_cost(&self, provider: Provider, cost: CostSnapshot) {
         self.inner.write().await.costs.insert(provider, cost);
         let _ = self.update_tx.send(StoreUpdate::CostUpdated(provider));
+    }
+
+    #[allow(dead_code)]
+    pub async fn update_token_snapshot(&self, provider: Provider, snapshot: CostUsageTokenSnapshot) {
+        self.inner
+            .write()
+            .await
+            .token_snapshots
+            .insert(provider, snapshot);
+        let _ = self.update_tx.send(StoreUpdate::TokenUsageUpdated(provider));
     }
 
     pub async fn set_error(&self, provider: Provider, error: String) {
@@ -165,12 +186,15 @@ mod tests {
                 reset_description: None,
             }),
             secondary: None,
+            tertiary: None,
+            provider_cost: None,
             carveouts: Vec::new(),
             updated_at: Utc::now(),
             identity: ProviderIdentity {
                 email: None,
                 organization: None,
                 plan: None,
+                login_method: None,
             },
         }
     }

@@ -1,6 +1,5 @@
-use crate::core::models::DailyCost;
 use crate::cost::pricing::PricingStore;
-use crate::cost::scanner::{aggregate_entries, CostScanner, LogEntry};
+use crate::cost::scanner::{CostScanner, LogEntry};
 use anyhow::Result;
 use chrono::NaiveDate;
 use serde::Deserialize;
@@ -10,11 +9,10 @@ use std::path::{Path, PathBuf};
 
 pub struct CodexCostScanner {
     sessions_dir: PathBuf,
-    pricing: PricingStore,
 }
 
 impl CodexCostScanner {
-    pub fn new(pricing: PricingStore) -> Self {
+    pub fn new() -> Self {
         let sessions_dir = std::env::var("CODEX_HOME")
             .map(|home| PathBuf::from(home).join("sessions"))
             .unwrap_or_else(|_| {
@@ -23,10 +21,7 @@ impl CodexCostScanner {
                     .unwrap_or_else(|| PathBuf::from(".codex/sessions"))
             });
 
-        Self {
-            sessions_dir,
-            pricing,
-        }
+        Self { sessions_dir }
     }
 
     fn find_jsonl_files(&self, since: NaiveDate, until: NaiveDate) -> Vec<PathBuf> {
@@ -177,12 +172,12 @@ impl CodexCostScanner {
 
 impl Default for CodexCostScanner {
     fn default() -> Self {
-        Self::new(PricingStore::default())
+        Self::new()
     }
 }
 
 impl CostScanner for CodexCostScanner {
-    fn scan(&self, since: NaiveDate, until: NaiveDate) -> Result<Vec<DailyCost>> {
+    fn scan_entries(&self, since: NaiveDate, until: NaiveDate) -> Result<Vec<LogEntry>> {
         tracing::debug!(dir = ?self.sessions_dir, "Scanning Codex sessions directory");
 
         let files = self.find_jsonl_files(since, until);
@@ -203,7 +198,7 @@ impl CostScanner for CodexCostScanner {
             .flatten()
             .collect();
 
-        Ok(aggregate_entries(entries, &self.pricing))
+        Ok(entries)
     }
 }
 
