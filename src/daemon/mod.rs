@@ -1,5 +1,6 @@
 mod app;
 pub mod dbus;
+pub mod login;
 pub mod tray;
 
 use anyhow::Result;

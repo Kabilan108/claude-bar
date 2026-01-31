@@ -428,6 +428,12 @@ impl TrayManager {
         inner.states.clear();
         tracing::info!("Tray icons shut down");
     }
+
+    #[allow(dead_code)]
+    pub async fn apply_settings(&self, settings: &Settings) -> anyhow::Result<()> {
+        self.shutdown().await;
+        self.start(settings).await
+    }
 }
 
 impl Default for TrayManager {

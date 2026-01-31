@@ -39,6 +39,13 @@ impl UsageProgressBar {
         imp.trough.replace(trough);
         self.queue_draw();
     }
+
+    pub fn set_pace_marker(&self, marker_progress: Option<f64>, is_deficit: bool) {
+        let imp = self.imp();
+        imp.pace_marker.set(marker_progress.unwrap_or(-1.0));
+        imp.pace_deficit.set(is_deficit);
+        self.queue_draw();
+    }
 }
 
 impl Default for UsageProgressBar {
@@ -71,6 +78,8 @@ mod imp {
         pub label: RefCell<String>,
         pub accent: RefCell<gdk::RGBA>,
         pub trough: RefCell<gdk::RGBA>,
+        pub pace_marker: Cell<f64>,
+        pub pace_deficit: Cell<bool>,
     }
 
     impl Default for UsageProgressBarPriv {
@@ -80,6 +89,8 @@ mod imp {
                 label: RefCell::new(String::new()),
                 accent: RefCell::new(gdk::RGBA::new(0.96, 0.65, 0.14, 1.0)),
                 trough: RefCell::new(gdk::RGBA::new(0.2, 0.2, 0.2, 0.3)),
+                pace_marker: Cell::new(-1.0),
+                pace_deficit: Cell::new(false),
             }
         }
     }
@@ -130,6 +141,18 @@ mod imp {
                     radius,
                     *self.accent.borrow(),
                 );
+            }
+
+            let marker = self.pace_marker.get();
+            if (0.0..=1.0).contains(&marker) {
+                let x = (width * marker) as f32;
+                let color = if self.pace_deficit.get() {
+                    gdk::RGBA::new(1.0, 0.0, 0.0, 0.8)
+                } else {
+                    gdk::RGBA::new(0.0, 0.7, 0.2, 0.8)
+                };
+                let rect = gtk4::graphene::Rect::new(x - 1.0, 0.0, 2.0, height as f32);
+                snapshot.append_color(&color, &rect);
             }
         }
 

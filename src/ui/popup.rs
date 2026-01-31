@@ -1,6 +1,8 @@
-use crate::core::models::{CostSnapshot, Provider, RateWindow, UsageSnapshot};
+use crate::core::models::{
+    CostSnapshot, CostUsageTokenSnapshot, Provider, ProviderCostSnapshot, RateWindow, UsageSnapshot,
+};
 use crate::core::settings::ThemeMode;
-use crate::ui::{colors, styles, UsageProgressBar};
+use crate::ui::{colors, styles, UsagePaceStage, UsagePaceText, UsageProgressBar};
 use chrono::{DateTime, Utc};
 use gtk4::gdk;
 use gtk4::glib::{self, clone};
@@ -25,6 +27,7 @@ fn separator() -> gtk4::Separator {
     let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
     sep.set_margin_top(8);
     sep.set_margin_bottom(8);
+    sep.add_css_class("section-separator");
     sep
 }
 
@@ -63,6 +66,7 @@ struct ProviderState {
     provider: Provider,
     snapshots: HashMap<Provider, UsageSnapshot>,
     costs: HashMap<Provider, CostSnapshot>,
+    token_snapshots: HashMap<Provider, CostUsageTokenSnapshot>,
     errors: HashMap<Provider, (String, String)>,
     show_as_remaining: bool,
     showing_provider_menu: bool,
@@ -71,6 +75,7 @@ struct ProviderState {
 struct UsageRow<'a> {
     title: String,
     window: &'a RateWindow,
+    show_pace: bool,
 }
 
 impl Default for ProviderState {
@@ -79,6 +84,7 @@ impl Default for ProviderState {
             provider: Provider::Claude,
             snapshots: HashMap::new(),
             costs: HashMap::new(),
+            token_snapshots: HashMap::new(),
             errors: HashMap::new(),
             show_as_remaining: false,
             showing_provider_menu: false,
@@ -205,6 +211,14 @@ impl PopupWindow {
         self.rebuild_if_visible();
     }
 
+    pub fn update_tokens(&self, provider: Provider, tokens: &CostUsageTokenSnapshot) {
+        {
+            let mut state = self.provider_state.borrow_mut();
+            state.token_snapshots.insert(provider, tokens.clone());
+        }
+        self.rebuild_if_visible();
+    }
+
     pub fn show_error(&self, provider: Provider, error: &str, hint: &str) {
         {
             let mut state = self.provider_state.borrow_mut();
@@ -220,6 +234,10 @@ impl PopupWindow {
     pub fn set_show_as_remaining(&self, show_as_remaining: bool) {
         self.provider_state.borrow_mut().show_as_remaining = show_as_remaining;
         self.rebuild_if_visible();
+    }
+
+    pub fn set_theme_mode(&self, mode: ThemeMode) {
+        self.apply_theme_mode(mode);
     }
 
     fn rebuild_if_visible(&self) {
@@ -321,33 +339,44 @@ impl PopupWindow {
         let state = self.provider_state.borrow();
         let snapshot = state.snapshots.get(&state.provider);
         let cost = state.costs.get(&state.provider);
+        let tokens = state.token_snapshots.get(&state.provider);
         let error = state.errors.get(&state.provider);
 
-        self.build_header(content, &state, snapshot);
+        self.build_provider_switcher(content, &state);
+        self.build_header(content, &state, snapshot, error);
         content.append(&separator());
 
         if let Some((error, hint)) = error {
             self.build_error_section(content, error, hint);
-            self.resize_to_content(content);
         } else if let Some(snapshot) = snapshot {
             let usage_rows = collect_usage_rows(state.provider, snapshot);
             let accent = provider_rgba(state.provider, 1.0);
             let trough = provider_rgba(state.provider, 0.25);
-            self.build_usage_sections(content, &usage_rows, state.show_as_remaining, &accent, &trough);
+            self.build_usage_sections(
+                content,
+                state.provider,
+                &usage_rows,
+                state.show_as_remaining,
+                &accent,
+                &trough,
+            );
 
-            if let Some(cost) = cost {
+            if let Some(provider_cost) = snapshot.provider_cost.as_ref() {
                 content.append(&separator());
-                self.build_cost_section(content, cost);
-            } else {
-                content.append(&separator());
+                self.build_provider_cost_section(content, provider_cost, &accent, &trough);
             }
 
-            self.build_footer(content, snapshot.updated_at);
-            self.resize_to_content(content);
+            if cost.is_some() || tokens.is_some() {
+                content.append(&separator());
+                self.build_cost_section(content, cost, tokens);
+            }
         } else {
             content.append(&label("No usage data yet", "dim-label", gtk4::Align::Start));
-            self.resize_to_content(content);
         }
+
+        let updated_at = snapshot.map(|s| s.updated_at);
+        self.build_footer_actions(content, updated_at);
+        self.resize_to_content(content);
     }
 
     fn rebuild_provider_menu_in(&self, content: &gtk4::Box, providers: &[Provider]) {
@@ -383,6 +412,7 @@ impl PopupWindow {
         content: &gtk4::Box,
         state: &ProviderState,
         snapshot: Option<&UsageSnapshot>,
+        error: Option<&(String, String)>,
     ) {
         let header_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         let title_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
@@ -397,34 +427,98 @@ impl PopupWindow {
 
         header_box.append(&title_row);
 
+        let subtitle_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        let subtitle_text = if error.is_some() {
+            "Unable to load usage"
+        } else if snapshot.is_some() {
+            "Usage limits"
+        } else {
+            "Loading usage"
+        };
+        let subtitle = label(subtitle_text, "subtitle", gtk4::Align::Start);
+        subtitle.set_hexpand(true);
+        subtitle_row.append(&subtitle);
+
         if let Some(plan) = snapshot.and_then(|s| s.identity.plan.as_ref()) {
-            header_box.append(&label(plan, "dim-label", gtk4::Align::Start));
+            let plan_badge = label(plan, "plan-badge", gtk4::Align::End);
+            subtitle_row.append(&plan_badge);
         }
 
+        header_box.append(&subtitle_row);
+
         content.append(&header_box);
+    }
+
+    fn build_provider_switcher(&self, content: &gtk4::Box, state: &ProviderState) {
+        let switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        switcher.add_css_class("provider-switcher");
+
+        for provider in [Provider::Claude, Provider::Codex] {
+            let button = gtk4::Button::new();
+            button.add_css_class("provider-tab");
+            if provider == state.provider {
+                button.add_css_class("selected");
+            }
+
+            let inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            let dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            dot.set_size_request(8, 8);
+            dot.add_css_class("provider-dot");
+            match provider {
+                Provider::Claude => dot.add_css_class("provider-dot-claude"),
+                Provider::Codex => dot.add_css_class("provider-dot-codex"),
+            }
+
+            let name = label(provider.name(), "provider-tab-label", gtk4::Align::Start);
+            inner.append(&dot);
+            inner.append(&name);
+            button.set_child(Some(&inner));
+
+            let popup = self.clone();
+            button.connect_clicked(move |_| {
+                popup.show(provider);
+            });
+
+            switcher.append(&button);
+        }
+
+        content.append(&switcher);
     }
 
     fn build_usage_sections(
         &self,
         content: &gtk4::Box,
+        provider: Provider,
         usage_rows: &[UsageRow<'_>],
         show_as_remaining: bool,
         accent: &gdk::RGBA,
         trough: &gdk::RGBA,
     ) {
         for row in usage_rows {
-            self.build_usage_row(content, row.title.as_str(), row.window, show_as_remaining, accent, trough);
+            self.build_usage_row(
+                content,
+                provider,
+                row.title.as_str(),
+                row.window,
+                show_as_remaining,
+                accent,
+                trough,
+                row.show_pace,
+            );
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_usage_row(
         &self,
         content: &gtk4::Box,
+        provider: Provider,
         title: &str,
         window: &RateWindow,
         show_as_remaining: bool,
         accent: &gdk::RGBA,
         trough: &gdk::RGBA,
+        show_pace: bool,
     ) {
         let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         section.set_margin_top(8);
@@ -439,6 +533,18 @@ impl PopupWindow {
         };
         progress_bar.set_progress(display_percent.clamp(0.0, 1.0));
         progress_bar.set_colors(*accent, *trough);
+        if show_pace {
+            if let Some(detail) = UsagePaceText::weekly_detail(provider, window, Utc::now()) {
+                let marker = detail.expected_used_percent / 100.0;
+                let is_deficit = matches!(
+                    detail.stage,
+                    UsagePaceStage::SlightlyAhead
+                        | UsagePaceStage::Ahead
+                        | UsagePaceStage::FarAhead
+                );
+                progress_bar.set_pace_marker(Some(marker), is_deficit);
+            }
+        }
         section.append(&progress_bar);
 
         let details_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
@@ -456,36 +562,79 @@ impl PopupWindow {
         }
 
         section.append(&details_row);
+
+        if show_pace {
+            if let Some(summary) = UsagePaceText::weekly_summary(provider, window, Utc::now()) {
+                section.append(&label(&summary, "pace-label", gtk4::Align::Start));
+            }
+        }
         content.append(&section);
     }
 
-    fn build_cost_section(&self, content: &gtk4::Box, cost: &CostSnapshot) {
+    fn build_cost_section(
+        &self,
+        content: &gtk4::Box,
+        cost: Option<&CostSnapshot>,
+        tokens: Option<&CostUsageTokenSnapshot>,
+    ) {
         let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        if cost.log_error {
-            let error_label = label("Error reading logs", "cost-error", gtk4::Align::Start);
-            attach_log_copy_handler(&error_label);
-            section.append(&error_label);
-        } else {
-            let prefix = if cost.pricing_estimate { "~" } else { "" };
-            let cost_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        section.append(&label("Cost", "heading", gtk4::Align::Start));
 
-            let today_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            let today_amount = label(&format!("{}${:.2}", prefix, cost.today_cost), "cost-amount", gtk4::Align::Start);
-            let today_period = label("today", "cost-period", gtk4::Align::Start);
-            today_box.append(&today_amount);
-            today_box.append(&today_period);
-            today_box.set_hexpand(true);
-
-            let month_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            let month_amount = label(&format!("{}${:.2}", prefix, cost.monthly_cost), "cost-amount", gtk4::Align::End);
-            let month_period = label("this month", "cost-period", gtk4::Align::End);
-            month_box.append(&month_amount);
-            month_box.append(&month_period);
-
-            cost_row.append(&today_box);
-            cost_row.append(&month_box);
-            section.append(&cost_row);
+        if let Some(cost) = cost {
+            if cost.log_error {
+                let error_label = label("Error reading logs", "cost-error", gtk4::Align::Start);
+                attach_log_copy_handler(&error_label);
+                section.append(&error_label);
+                content.append(&section);
+                return;
+            }
         }
+
+        if let Some(tokens) = tokens {
+            let prefix = cost.map_or("", |c| if c.pricing_estimate { "~" } else { "" });
+            let session_cost = tokens
+                .session_cost_usd
+                .or_else(|| cost.map(|c| c.today_cost))
+                .map(|v| format!("{}{}", prefix, format_currency(v)));
+            let month_cost = tokens
+                .last_30_days_cost_usd
+                .or_else(|| cost.map(|c| c.monthly_cost))
+                .map(|v| format!("{}{}", prefix, format_currency(v)));
+
+            let session_tokens = tokens.session_tokens.map(format_token_count);
+            let session_line = if let Some(cost_text) = session_cost {
+                if let Some(tokens_text) = session_tokens {
+                    format!("Today: {} · {} tokens", cost_text, tokens_text)
+                } else {
+                    format!("Today: {}", cost_text)
+                }
+            } else {
+                "Today: —".to_string()
+            };
+
+            let month_tokens = tokens.last_30_days_tokens.map(format_token_count);
+            let month_line = if let Some(cost_text) = month_cost {
+                if let Some(tokens_text) = month_tokens {
+                    format!("Last 30 days: {} · {} tokens", cost_text, tokens_text)
+                } else {
+                    format!("Last 30 days: {}", cost_text)
+                }
+            } else {
+                "Last 30 days: —".to_string()
+            };
+
+            section.append(&label(&session_line, "cost-line", gtk4::Align::Start));
+            section.append(&label(&month_line, "cost-line", gtk4::Align::Start));
+        } else if let Some(cost) = cost {
+            let prefix = if cost.pricing_estimate { "~" } else { "" };
+            let today = format!("Today: {}{}", prefix, format_currency(cost.today_cost));
+            let month = format!("Last 30 days: {}{}", prefix, format_currency(cost.monthly_cost));
+            section.append(&label(&today, "cost-line", gtk4::Align::Start));
+            section.append(&label(&month, "cost-line", gtk4::Align::Start));
+        } else {
+            section.append(&label("No cost data yet", "dim-label", gtk4::Align::Start));
+        }
+
         content.append(&section);
     }
 
@@ -507,14 +656,297 @@ impl PopupWindow {
         content.append(&section);
     }
 
-    fn build_footer(&self, content: &gtk4::Box, updated_at: DateTime<Utc>) {
-        let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        footer.set_margin_top(8);
-        footer.set_margin_bottom(6);
-        let updated_label = label(&format_relative_time(updated_at), "footer-label", gtk4::Align::Start);
-        updated_label.set_hexpand(true);
-        footer.append(&updated_label);
-        content.append(&footer);
+    fn build_provider_cost_section(
+        &self,
+        content: &gtk4::Box,
+        cost: &ProviderCostSnapshot,
+        accent: &gdk::RGBA,
+        trough: &gdk::RGBA,
+    ) {
+        if cost.limit <= 0.0 {
+            return;
+        }
+
+        let title = if cost.currency_code == "Quota" {
+            "Quota usage".to_string()
+        } else {
+            "Extra usage".to_string()
+        };
+
+        let used = if cost.currency_code == "Quota" {
+            format!("{:.0}", cost.used)
+        } else {
+            format_currency_with_code(cost.used, &cost.currency_code)
+        };
+        let limit = if cost.currency_code == "Quota" {
+            format!("{:.0}", cost.limit)
+        } else {
+            format_currency_with_code(cost.limit, &cost.currency_code)
+        };
+        let period = cost.period.as_deref().unwrap_or("This month");
+        let spend_line = format!("{}: {} / {}", period, used, limit);
+
+        let percent_used = (cost.used / cost.limit).clamp(0.0, 1.0);
+
+        let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        section.append(&label(&title, "heading", gtk4::Align::Start));
+
+        let progress_bar = UsageProgressBar::new();
+        progress_bar.set_hexpand(true);
+        progress_bar.set_progress(percent_used);
+        progress_bar.set_colors(*accent, *trough);
+        section.append(&progress_bar);
+
+        let details = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        let spend_label = label(&spend_line, "cost-line", gtk4::Align::Start);
+        spend_label.set_hexpand(true);
+        details.append(&spend_label);
+        details.append(&label(
+            &format!("{:.0}% used", percent_used * 100.0),
+            "countdown-label",
+            gtk4::Align::End,
+        ));
+
+        section.append(&details);
+        content.append(&section);
+    }
+
+    fn build_footer_actions(&self, content: &gtk4::Box, updated_at: Option<DateTime<Utc>>) {
+        if let Some(updated_at) = updated_at {
+            let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+            footer.set_margin_top(8);
+            footer.set_margin_bottom(6);
+            let updated_label = label(
+                &format_relative_time(updated_at),
+                "footer-label",
+                gtk4::Align::Start,
+            );
+            updated_label.set_hexpand(true);
+            footer.append(&updated_label);
+            content.append(&footer);
+        }
+
+        let actions = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        actions.add_css_class("footer-actions");
+
+        let provider = self.provider_state.borrow().provider;
+        let has_error = self.provider_state.borrow().errors.contains_key(&provider);
+        let login_label = if has_error { "Add Account" } else { "Switch Account" };
+
+        actions.append(&self.action_button(login_label, move || {
+            crate::daemon::login::spawn_provider_login(provider);
+        }));
+        actions.append(&self.action_button("Usage Dashboard", move || {
+            open::that(provider.dashboard_url()).ok();
+        }));
+        actions.append(&self.action_button("Status Page", move || {
+            open::that(provider.status_url()).ok();
+        }));
+        actions.append(&self.action_button("Refresh Now", move || {
+            trigger_refresh();
+        }));
+        actions.append(&self.action_button("Settings", {
+            let popup = self.clone();
+            move || {
+                popup.open_settings_window();
+            }
+        }));
+        actions.append(&self.action_button("About", {
+            let popup = self.clone();
+            move || {
+                popup.open_about_window();
+            }
+        }));
+        actions.append(&self.action_button("Quit", move || {
+            std::process::exit(0);
+        }));
+
+        content.append(&actions);
+    }
+
+    fn action_button<F>(&self, label_text: &str, action: F) -> gtk4::Button
+    where
+        F: Fn() + 'static,
+    {
+        let button = gtk4::Button::with_label(label_text);
+        button.add_css_class("footer-action");
+        button.set_halign(gtk4::Align::Start);
+        button.connect_clicked(move |_| {
+            action();
+        });
+        button
+    }
+
+    fn open_settings_window(&self) {
+        let settings = crate::core::settings::Settings::load().unwrap_or_default();
+        let settings = Rc::new(RefCell::new(settings));
+
+        let window = adw::PreferencesWindow::builder()
+            .transient_for(&self.window)
+            .title("Settings")
+            .default_width(360)
+            .default_height(420)
+            .build();
+
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_title("Display");
+
+        let show_remaining_row = adw::ActionRow::builder()
+            .title("Show remaining usage")
+            .build();
+        let show_remaining_switch = gtk4::Switch::new();
+        show_remaining_switch.set_active(settings.borrow().display.show_as_remaining);
+        show_remaining_row.add_suffix(&show_remaining_switch);
+        show_remaining_row.set_activatable_widget(Some(&show_remaining_switch));
+        {
+            let settings = Rc::clone(&settings);
+            let popup = self.clone();
+            show_remaining_switch.connect_state_set(move |_, state| {
+                {
+                    let mut settings = settings.borrow_mut();
+                    settings.display.show_as_remaining = state;
+                    if let Err(e) = settings.save() {
+                        tracing::warn!(error = %e, "Failed to save settings");
+                    }
+                }
+                popup.set_show_as_remaining(state);
+                glib::Propagation::Proceed
+            });
+        }
+        group.add(&show_remaining_row);
+
+        let merge_icons_row = adw::ActionRow::builder()
+            .title("Merge tray icons")
+            .build();
+        let merge_icons_switch = gtk4::Switch::new();
+        merge_icons_switch.set_active(settings.borrow().providers.merge_icons);
+        merge_icons_row.add_suffix(&merge_icons_switch);
+        merge_icons_row.set_activatable_widget(Some(&merge_icons_switch));
+        {
+            let settings = Rc::clone(&settings);
+            merge_icons_switch.connect_state_set(move |_, state| {
+                {
+                    let mut settings = settings.borrow_mut();
+                    settings.providers.merge_icons = state;
+                    if let Err(e) = settings.save() {
+                        tracing::warn!(error = %e, "Failed to save settings");
+                    }
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        group.add(&merge_icons_row);
+
+        let theme_row = adw::ComboRow::new();
+        theme_row.set_title("Theme");
+        let theme_model = gtk4::StringList::new(&["System", "Light", "Dark"]);
+        theme_row.set_model(Some(&theme_model));
+        theme_row.set_selected(match settings.borrow().theme.mode {
+            ThemeMode::System => 0,
+            ThemeMode::Light => 1,
+            ThemeMode::Dark => 2,
+        });
+        {
+            let settings = Rc::clone(&settings);
+            let popup = self.clone();
+            theme_row.connect_selected_notify(move |row| {
+                let mode = match row.selected() {
+                    1 => ThemeMode::Light,
+                    2 => ThemeMode::Dark,
+                    _ => ThemeMode::System,
+                };
+                {
+                    let mut settings = settings.borrow_mut();
+                    settings.theme.mode = mode.clone();
+                    if let Err(e) = settings.save() {
+                        tracing::warn!(error = %e, "Failed to save settings");
+                    }
+                }
+                popup.set_theme_mode(mode);
+            });
+        }
+        group.add(&theme_row);
+
+        let notifications_group = adw::PreferencesGroup::new();
+        notifications_group.set_title("Notifications");
+        let threshold_row = adw::ActionRow::builder()
+            .title("Usage threshold")
+            .subtitle("Notify when usage exceeds this percent")
+            .build();
+        let threshold_spin = gtk4::SpinButton::with_range(0.0, 1.0, 0.05);
+        threshold_spin.set_value(settings.borrow().notifications.threshold);
+        threshold_row.add_suffix(&threshold_spin);
+        threshold_row.set_activatable_widget(Some(&threshold_spin));
+        {
+            let settings = Rc::clone(&settings);
+            threshold_spin.connect_value_changed(move |spin| {
+                {
+                    let mut settings = settings.borrow_mut();
+                    settings.notifications.threshold = spin.value();
+                    if let Err(e) = settings.save() {
+                        tracing::warn!(error = %e, "Failed to save settings");
+                    }
+                }
+            });
+        }
+        notifications_group.add(&threshold_row);
+
+        let shortcuts_group = adw::PreferencesGroup::new();
+        shortcuts_group.set_title("Shortcuts");
+        let shortcut_row = adw::ActionRow::builder()
+            .title("Open popup")
+            .build();
+        let shortcut_entry = gtk4::Entry::new();
+        shortcut_entry.set_text(&settings.borrow().shortcuts.popup);
+        shortcut_entry.set_width_chars(12);
+        shortcut_row.add_suffix(&shortcut_entry);
+        shortcut_row.set_activatable_widget(Some(&shortcut_entry));
+        {
+            let settings = Rc::clone(&settings);
+            shortcut_entry.connect_changed(move |entry| {
+                {
+                    let mut settings = settings.borrow_mut();
+                    settings.shortcuts.popup = entry.text().to_string();
+                    if let Err(e) = settings.save() {
+                        tracing::warn!(error = %e, "Failed to save settings");
+                    }
+                }
+            });
+        }
+        let shortcut_switch = gtk4::Switch::new();
+        shortcut_switch.set_active(settings.borrow().shortcuts.enabled);
+        shortcut_row.add_suffix(&shortcut_switch);
+        {
+            let settings = Rc::clone(&settings);
+            shortcut_switch.connect_state_set(move |_, state| {
+                {
+                    let mut settings = settings.borrow_mut();
+                    settings.shortcuts.enabled = state;
+                    if let Err(e) = settings.save() {
+                        tracing::warn!(error = %e, "Failed to save settings");
+                    }
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        shortcuts_group.add(&shortcut_row);
+
+        page.add(&group);
+        page.add(&notifications_group);
+        page.add(&shortcuts_group);
+        window.add(&page);
+        window.present();
+    }
+
+    fn open_about_window(&self) {
+        let dialog = gtk4::AboutDialog::builder()
+            .transient_for(&self.window)
+            .modal(true)
+            .program_name("Claude Bar")
+            .version(env!("CARGO_PKG_VERSION"))
+            .build();
+        dialog.present();
     }
 
     fn start_live_updates(&self) {
@@ -566,6 +998,7 @@ fn collect_usage_rows(provider: Provider, snapshot: &UsageSnapshot) -> Vec<Usage
         rows.push(UsageRow {
             title: label.to_string(),
             window: primary,
+            show_pace: false,
         });
     }
 
@@ -577,17 +1010,47 @@ fn collect_usage_rows(provider: Provider, snapshot: &UsageSnapshot) -> Vec<Usage
         rows.push(UsageRow {
             title: label.to_string(),
             window: secondary,
+            show_pace: true,
         });
     }
 
-    for carveout in &snapshot.carveouts {
+    if let Some(tertiary) = &snapshot.tertiary {
+        let label = resolve_tertiary_label(snapshot, provider);
         rows.push(UsageRow {
-            title: carveout.label.clone(),
-            window: &carveout.window,
+            title: label,
+            window: tertiary,
+            show_pace: false,
         });
     }
 
     rows
+}
+
+fn resolve_tertiary_label(snapshot: &UsageSnapshot, provider: Provider) -> String {
+    let Some(tertiary) = snapshot.tertiary.as_ref() else {
+        return "Model".to_string();
+    };
+
+    for carveout in &snapshot.carveouts {
+        if windows_match(&carveout.window, tertiary) {
+            return carveout
+                .label
+                .trim_end_matches(" Weekly")
+                .to_string();
+        }
+    }
+
+    match provider {
+        Provider::Claude => "Model".to_string(),
+        Provider::Codex => "Additional".to_string(),
+    }
+}
+
+fn windows_match(left: &RateWindow, right: &RateWindow) -> bool {
+    let percent_close = (left.used_percent - right.used_percent).abs() < 0.001;
+    let reset_same = left.resets_at == right.resets_at;
+    let window_same = left.window_minutes == right.window_minutes;
+    percent_close && reset_same && window_same
 }
 
 fn attach_log_copy_handler(label: &gtk4::Label) {
@@ -732,4 +1195,50 @@ fn format_reset_time(reset_at: DateTime<Utc>) -> String {
     } else {
         format!("resets in {}m", minutes)
     }
+}
+
+fn format_currency(value: f64) -> String {
+    format!("${:.2}", value)
+}
+
+fn format_currency_with_code(value: f64, code: &str) -> String {
+    if code == "USD" {
+        return format_currency(value);
+    }
+    format!("{} {:.2}", code, value)
+}
+
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn trigger_refresh() {
+    tokio::spawn(async {
+        let connection = match zbus::Connection::session().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to connect to D-Bus session");
+                return;
+            }
+        };
+        let result: zbus::Result<()> = connection
+            .call_method(
+                Some(crate::daemon::DBUS_NAME),
+                crate::daemon::DBUS_PATH,
+                Some(crate::daemon::DBUS_NAME),
+                "Refresh",
+                &(),
+            )
+            .await
+            .map(|reply| reply.body().deserialize().unwrap_or(()));
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "Failed to trigger refresh");
+        }
+    });
 }

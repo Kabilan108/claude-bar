@@ -13,6 +13,7 @@ pub struct Settings {
     pub browser: BrowserSettings,
     pub notifications: NotificationSettings,
     pub theme: ThemeSettings,
+    pub shortcuts: ShortcutSettings,
     pub debug: bool,
 }
 
@@ -89,6 +90,22 @@ pub struct ThemeSettings {
     pub mode: ThemeMode,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShortcutSettings {
+    pub enabled: bool,
+    pub popup: String,
+}
+
+impl Default for ShortcutSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            popup: "Ctrl+Shift+U".to_string(),
+        }
+    }
+}
+
 impl Settings {
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|p| p.join("claude-bar").join("config.toml"))
@@ -119,6 +136,17 @@ impl Settings {
                 self.notifications.threshold
             );
         }
+        Ok(())
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = Self::config_path().context("Could not determine config directory")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self).context("Failed to serialize settings")?;
+        std::fs::write(&path, content)
+            .with_context(|| format!("Failed to write config file: {}", path.display()))?;
         Ok(())
     }
 }

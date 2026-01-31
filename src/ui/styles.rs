@@ -13,6 +13,51 @@ pub fn css_for_provider(provider: Provider) -> String {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }}
 
+.provider-switcher {{
+    margin-bottom: 6px;
+}}
+
+.provider-tab {{
+    padding: 4px 8px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+}}
+
+.provider-tab.selected {{
+    border-bottom: 2px solid @provider_accent;
+}}
+
+.provider-tab-label {{
+    font-size: 0.9em;
+    font-weight: 600;
+}}
+
+.provider-dot {{
+    border-radius: 999px;
+}}
+
+.provider-dot-claude {{
+    background-color: #F5A623;
+}}
+
+.provider-dot-codex {{
+    background-color: #10A37F;
+}}
+
+.subtitle {{
+    font-size: 0.85em;
+    color: @theme_unfocused_fg_color;
+}}
+
+.plan-badge {{
+    font-size: 0.8em;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background-color: alpha(@provider_accent, 0.15);
+    color: @theme_fg_color;
+}}
+
 .usage-label {{
     font-size: 0.95em;
     color: @theme_fg_color;
@@ -21,6 +66,16 @@ pub fn css_for_provider(provider: Provider) -> String {
 .countdown-label {{
     font-size: 0.85em;
     color: @theme_unfocused_fg_color;
+}}
+
+.pace-label {{
+    font-size: 0.8em;
+    color: @theme_unfocused_fg_color;
+}}
+
+.cost-line {{
+    font-size: 0.9em;
+    color: @theme_fg_color;
 }}
 
 .cost-amount {{
@@ -45,6 +100,14 @@ pub fn css_for_provider(provider: Provider) -> String {
     color: @theme_unfocused_fg_color;
 }}
 
+.footer-actions {{
+    margin-top: 4px;
+}}
+
+.footer-action {{
+    padding: 4px 8px;
+}}
+
 .error-hint {{
     font-family: monospace;
     font-size: 0.85em;
@@ -66,6 +129,11 @@ pub fn css_for_provider(provider: Provider) -> String {
 .title-3 {{
     font-weight: 700;
     font-size: 1.2em;
+}}
+
+.section-separator {{
+    margin-top: 6px;
+    margin-bottom: 6px;
 }}
 
 .provider-choice {{

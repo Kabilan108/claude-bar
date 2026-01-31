@@ -1,7 +1,7 @@
 use crate::core::credentials::CredentialsWatcher;
-use crate::core::models::{CostSnapshot, Provider, UsageSnapshot};
+use crate::core::models::{CostSnapshot, CostUsageTokenSnapshot, Provider, UsageSnapshot};
 use crate::core::retry::RetryState;
-use crate::core::settings::SettingsWatcher;
+use crate::core::settings::{Settings, SettingsWatcher};
 use crate::core::store::UsageStore;
 use crate::cost::{CostStore, PricingRefreshResult};
 use crate::daemon::dbus::{start_dbus_server, DbusCommand};
@@ -11,6 +11,8 @@ use crate::ui::PopupWindow;
 use anyhow::Result;
 use gtk4::glib;
 use gtk4::prelude::*;
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
 use libadwaita as adw;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -24,8 +26,9 @@ const APP_ID: &str = "com.github.kabilan.claude-bar";
 pub async fn run() -> Result<()> {
     tracing::info!(app_id = APP_ID, "Initializing GTK application");
 
-    let settings_watcher = SettingsWatcher::new()?;
+    let mut settings_watcher = SettingsWatcher::new()?;
     let settings = settings_watcher.get().await;
+    settings_watcher.start_watching()?;
 
     let store = Arc::new(UsageStore::new());
     let cost_store = Arc::new(RwLock::new(CostStore::new()));
@@ -41,6 +44,13 @@ pub async fn run() -> Result<()> {
     tokio::spawn(run_animation_loop(Arc::clone(&tray_manager)));
 
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiCommand>();
+
+    start_global_shortcut(
+        &settings,
+        Arc::clone(&store),
+        ui_tx.clone(),
+        Arc::clone(&registry),
+    );
 
     let (dbus_cmd_tx, dbus_cmd_rx) = mpsc::unbounded_channel::<DbusCommand>();
     let _dbus_connection = start_dbus_server(dbus_cmd_tx).await?;
@@ -70,6 +80,21 @@ pub async fn run() -> Result<()> {
         ui_tx.clone(),
     ));
 
+    let mut settings_rx = settings_watcher.subscribe();
+    let tray_for_settings = Arc::clone(&tray_manager);
+    let ui_tx_settings = ui_tx.clone();
+    tokio::spawn(async move {
+        while let Ok(new_settings) = settings_rx.recv().await {
+            if let Err(e) = tray_for_settings.apply_settings(&new_settings).await {
+                tracing::warn!(error = %e, "Failed to apply tray settings");
+            }
+            let _ = ui_tx_settings.send(UiCommand::ApplySettings {
+                show_as_remaining: new_settings.display.show_as_remaining,
+                theme_mode: new_settings.theme.mode.clone(),
+            });
+        }
+    });
+
     if let Some(mut event_rx) = tray_manager.take_event_receiver().await {
         let store_clone = Arc::clone(&store);
         let registry_clone = Arc::clone(&registry);
@@ -90,7 +115,13 @@ pub async fn run() -> Result<()> {
         });
     }
 
-    run_gtk_main_loop(ui_rx, settings.theme.mode, Arc::clone(&tray_manager)).await
+    run_gtk_main_loop(
+        ui_rx,
+        settings.theme.mode,
+        settings.display.show_as_remaining,
+        Arc::clone(&tray_manager),
+    )
+    .await
 }
 
 async fn handle_dbus_commands(
@@ -136,8 +167,9 @@ async fn handle_dbus_commands(
 enum UiCommand {
     ShowPopup {
         provider: Provider,
-        snapshot: Option<UsageSnapshot>,
-        cost: Option<CostSnapshot>,
+        snapshot: Option<Box<UsageSnapshot>>,
+        cost: Option<Box<CostSnapshot>>,
+        tokens: Option<Box<CostUsageTokenSnapshot>>,
         error: Option<(String, String)>,
     },
     ShowProviderMenu {
@@ -145,17 +177,26 @@ enum UiCommand {
     },
     UpdateUsage {
         provider: Provider,
-        snapshot: UsageSnapshot,
+        snapshot: Box<UsageSnapshot>,
     },
     UpdateCost {
         provider: Provider,
-        cost: CostSnapshot,
+        cost: Box<CostSnapshot>,
+    },
+    UpdateTokens {
+        provider: Provider,
+        tokens: Box<CostUsageTokenSnapshot>,
+    },
+    ApplySettings {
+        show_as_remaining: bool,
+        theme_mode: crate::core::settings::ThemeMode,
     },
 }
 
 async fn run_gtk_main_loop(
     mut ui_rx: mpsc::UnboundedReceiver<UiCommand>,
     theme_mode: crate::core::settings::ThemeMode,
+    show_as_remaining: bool,
     tray_manager: Arc<TrayManager>,
 ) -> Result<()> {
     gtk4::init().expect("Failed to initialize GTK4");
@@ -170,6 +211,7 @@ async fn run_gtk_main_loop(
     app.connect_activate(move |app| {
         tracing::info!("GTK application activated");
         let popup = PopupWindow::new(app, theme_mode.clone());
+        popup.set_show_as_remaining(show_as_remaining);
         *popup_holder_activate.borrow_mut() = Some(popup);
         if matches!(theme_mode, crate::core::settings::ThemeMode::System) {
             let is_dark = adw::StyleManager::default().is_dark();
@@ -206,6 +248,7 @@ fn handle_ui_command(popup: &PopupWindow, cmd: UiCommand) {
             provider,
             snapshot,
             cost,
+            tokens,
             error,
         } => {
             if let Some((error_msg, hint)) = error {
@@ -216,6 +259,9 @@ fn handle_ui_command(popup: &PopupWindow, cmd: UiCommand) {
                 }
                 if let Some(c) = cost {
                     popup.update_cost(provider, &c);
+                }
+                if let Some(t) = tokens {
+                    popup.update_tokens(provider, &t);
                 }
             }
             popup.show(provider);
@@ -228,6 +274,16 @@ fn handle_ui_command(popup: &PopupWindow, cmd: UiCommand) {
         }
         UiCommand::UpdateCost { provider, cost } => {
             popup.update_cost(provider, &cost);
+        }
+        UiCommand::UpdateTokens { provider, tokens } => {
+            popup.update_tokens(provider, &tokens);
+        }
+        UiCommand::ApplySettings {
+            show_as_remaining,
+            theme_mode,
+        } => {
+            popup.set_show_as_remaining(show_as_remaining);
+            popup.set_theme_mode(theme_mode);
         }
     }
 }
@@ -268,17 +324,19 @@ async fn handle_tray_event(
                 });
             }
 
-            let snapshot = store.get_snapshot(provider).await;
-            let cost = store.get_cost(provider).await;
+            let snapshot = store.get_snapshot(provider).await.map(Box::new);
+            let cost = store.get_cost(provider).await.map(Box::new);
             let error = store
                 .get_error(provider)
                 .await
                 .map(|e| (e, provider_error_hint(provider).to_string()));
+            let tokens = store.get_token_snapshot(provider).await.map(Box::new);
 
             let _ = ui_tx.send(UiCommand::ShowPopup {
                 provider,
                 snapshot,
                 cost,
+                tokens,
                 error,
             });
         }
@@ -442,11 +500,18 @@ async fn scan_and_update_costs(
         cost_store.scan_all()
     };
 
-    for (provider, snapshot) in costs {
-        store.update_cost(provider, snapshot.clone()).await;
+    for (provider, result) in costs {
+        store.update_cost(provider, result.cost.clone()).await;
+        store
+            .update_token_snapshot(provider, result.tokens.clone())
+            .await;
         let _ = ui_tx.send(UiCommand::UpdateCost {
             provider,
-            cost: snapshot,
+            cost: Box::new(result.cost),
+        });
+        let _ = ui_tx.send(UiCommand::UpdateTokens {
+            provider,
+            tokens: Box::new(result.tokens),
         });
     }
 }
@@ -556,7 +621,10 @@ async fn apply_successful_fetch(
     store.update_snapshot(provider, snapshot.clone()).await;
     tray.update_icon(provider, primary, secondary).await;
     tray.set_credentials_valid(provider, true).await;
-    let _ = ui_tx.send(UiCommand::UpdateUsage { provider, snapshot });
+    let _ = ui_tx.send(UiCommand::UpdateUsage {
+        provider,
+        snapshot: Box::new(snapshot),
+    });
 }
 
 async fn apply_failed_fetch(
@@ -569,4 +637,137 @@ async fn apply_failed_fetch(
     tracing::warn!(?provider, error = %error_msg, "Failed to fetch usage");
     store.set_error(provider, error_msg).await;
     tray.set_error(provider).await;
+}
+
+fn start_global_shortcut(
+    settings: &Settings,
+    store: Arc<UsageStore>,
+    ui_tx: mpsc::UnboundedSender<UiCommand>,
+    registry: Arc<ProviderRegistry>,
+) {
+    if !settings.shortcuts.enabled {
+        return;
+    }
+
+    let Some(hotkey) = parse_hotkey(&settings.shortcuts.popup) else {
+        tracing::warn!("Failed to parse shortcut; global hotkey disabled");
+        return;
+    };
+
+    let manager = match GlobalHotKeyManager::new() {
+        Ok(manager) => manager,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to create hotkey manager");
+            return;
+        }
+    };
+
+    if let Err(e) = manager.register(hotkey) {
+        tracing::warn!(error = %e, "Failed to register global hotkey");
+        return;
+    }
+
+    let provider = registry
+        .enabled_provider_ids()
+        .first()
+        .copied()
+        .unwrap_or(Provider::Claude);
+
+    let receiver = GlobalHotKeyEvent::receiver();
+    std::thread::spawn(move || {
+        let _manager = manager;
+        while let Ok(event) = receiver.recv() {
+            if event.id == hotkey.id() {
+                let store = Arc::clone(&store);
+                let ui_tx = ui_tx.clone();
+                tokio::spawn(async move {
+                    let snapshot = store.get_snapshot(provider).await.map(Box::new);
+                    let cost = store.get_cost(provider).await.map(Box::new);
+                    let tokens = store.get_token_snapshot(provider).await.map(Box::new);
+                    let error = store
+                        .get_error(provider)
+                        .await
+                        .map(|e| (e, provider_error_hint(provider).to_string()));
+                    let _ = ui_tx.send(UiCommand::ShowPopup {
+                        provider,
+                        snapshot,
+                        cost,
+                        tokens,
+                        error,
+                    });
+                });
+            }
+        }
+    });
+}
+
+fn parse_hotkey(input: &str) -> Option<HotKey> {
+    let mut modifiers = Modifiers::empty();
+    let mut key = None;
+
+    for raw in input.split('+') {
+        let part = raw.trim().to_lowercase();
+        if part.is_empty() {
+            continue;
+        }
+        match part.as_str() {
+            "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
+            "shift" => modifiers |= Modifiers::SHIFT,
+            "alt" | "option" => modifiers |= Modifiers::ALT,
+            "super" | "cmd" | "meta" => modifiers |= Modifiers::SUPER,
+            _ => {
+                key = key_code_for(&part);
+            }
+        }
+    }
+
+    let key = key?;
+    Some(HotKey::new(Some(modifiers), key))
+}
+
+fn key_code_for(input: &str) -> Option<Code> {
+    if input.len() == 1 {
+        let ch = input.chars().next()?.to_ascii_uppercase();
+        return match ch {
+            'A' => Some(Code::KeyA),
+            'B' => Some(Code::KeyB),
+            'C' => Some(Code::KeyC),
+            'D' => Some(Code::KeyD),
+            'E' => Some(Code::KeyE),
+            'F' => Some(Code::KeyF),
+            'G' => Some(Code::KeyG),
+            'H' => Some(Code::KeyH),
+            'I' => Some(Code::KeyI),
+            'J' => Some(Code::KeyJ),
+            'K' => Some(Code::KeyK),
+            'L' => Some(Code::KeyL),
+            'M' => Some(Code::KeyM),
+            'N' => Some(Code::KeyN),
+            'O' => Some(Code::KeyO),
+            'P' => Some(Code::KeyP),
+            'Q' => Some(Code::KeyQ),
+            'R' => Some(Code::KeyR),
+            'S' => Some(Code::KeyS),
+            'T' => Some(Code::KeyT),
+            'U' => Some(Code::KeyU),
+            'V' => Some(Code::KeyV),
+            'W' => Some(Code::KeyW),
+            'X' => Some(Code::KeyX),
+            'Y' => Some(Code::KeyY),
+            'Z' => Some(Code::KeyZ),
+            '0' => Some(Code::Digit0),
+            '1' => Some(Code::Digit1),
+            '2' => Some(Code::Digit2),
+            '3' => Some(Code::Digit3),
+            '4' => Some(Code::Digit4),
+            '5' => Some(Code::Digit5),
+            '6' => Some(Code::Digit6),
+            '7' => Some(Code::Digit7),
+            '8' => Some(Code::Digit8),
+            '9' => Some(Code::Digit9),
+            _ => None,
+        };
+    }
+
+    None
 }
