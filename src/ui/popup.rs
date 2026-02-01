@@ -1,12 +1,13 @@
 use crate::core::models::{
     CostSnapshot, CostUsageTokenSnapshot, Provider, ProviderCostSnapshot, RateWindow, UsageSnapshot,
 };
-use crate::core::settings::ThemeMode;
+use crate::core::settings::{PopupAnchor, PopupSettings, ThemeMode};
 use crate::ui::{colors, styles, UsagePaceStage, UsagePaceText, UsageProgressBar};
 use chrono::{DateTime, Utc};
 use gtk4::gdk;
 use gtk4::glib::{self, clone};
 use gtk4::prelude::*;
+use gtk4_layer_shell::LayerShell;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -59,6 +60,8 @@ pub struct PopupWindow {
     active_primary: Rc<Cell<bool>>,
     provider_state: Rc<RefCell<ProviderState>>,
     update_source: Rc<Cell<Option<glib::SourceId>>>,
+    dismiss_source: Rc<Cell<Option<glib::SourceId>>>,
+    dismiss_timeout_ms: Rc<Cell<u64>>,
     css_provider: gtk4::CssProvider,
 }
 
@@ -93,7 +96,7 @@ impl Default for ProviderState {
 }
 
 impl PopupWindow {
-    pub fn new(app: &adw::Application, theme_mode: ThemeMode) -> Self {
+    pub fn new(app: &adw::Application, theme_mode: ThemeMode, popup_settings: &PopupSettings) -> Self {
         let window = adw::Window::builder()
             .application(app)
             .title("Claude Bar")
@@ -105,6 +108,15 @@ impl PopupWindow {
             .build();
 
         window.add_css_class("popup-window");
+
+        if gtk4_layer_shell::is_supported() {
+            window.init_layer_shell();
+            window.set_layer(gtk4_layer_shell::Layer::Top);
+            window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
+            window.set_namespace(Some("claude-bar-popup"));
+            window.set_exclusive_zone(-1);
+            apply_layer_shell_position(&window, popup_settings);
+        }
 
         let css_provider = gtk4::CssProvider::new();
         let css = styles::css_for_provider(Provider::Claude);
@@ -127,17 +139,49 @@ impl PopupWindow {
         stack.add_named(&content_secondary, Some("secondary"));
         stack.set_visible_child(&content_primary);
 
-        window.set_content(Some(&stack));
+        let frame = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        frame.add_css_class("popup-frame");
+        frame.append(&stack);
+        window.set_content(Some(&frame));
 
         let provider_state = Rc::new(RefCell::new(ProviderState::default()));
         let update_source = Rc::new(Cell::new(None));
         let active_primary = Rc::new(Cell::new(true));
+        let dismiss_source = Rc::new(Cell::new(None));
+        let dismiss_timeout_ms = Rc::new(Cell::new(popup_settings.dismiss_timeout_ms));
 
         let focus_controller = gtk4::EventControllerFocus::new();
-        let window_clone = window.clone();
-        focus_controller.connect_leave(move |_| {
-            window_clone.close();
-        });
+        {
+            let window_close = window.clone();
+            let dismiss_src = Rc::clone(&dismiss_source);
+            let timeout_ms = Rc::clone(&dismiss_timeout_ms);
+            focus_controller.connect_leave(move |_| {
+                let ms = timeout_ms.get();
+                if ms == 0 {
+                    window_close.close();
+                    return;
+                }
+
+                let window_deferred = window_close.clone();
+                let dismiss_src_inner = Rc::clone(&dismiss_src);
+                let source_id = glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(ms),
+                    move || {
+                        dismiss_src_inner.set(None);
+                        window_deferred.close();
+                    },
+                );
+                dismiss_src.set(Some(source_id));
+            });
+        }
+        {
+            let dismiss_src = Rc::clone(&dismiss_source);
+            focus_controller.connect_enter(move |_| {
+                if let Some(source_id) = dismiss_src.take() {
+                    source_id.remove();
+                }
+            });
+        }
         window.add_controller(focus_controller);
 
         let popup = Self {
@@ -148,12 +192,21 @@ impl PopupWindow {
             active_primary,
             provider_state,
             update_source,
+            dismiss_source,
+            dismiss_timeout_ms,
             css_provider,
         };
 
         popup.apply_theme_mode(theme_mode);
         popup.install_key_controller();
         popup
+    }
+
+    pub fn apply_popup_settings(&self, settings: &PopupSettings) {
+        self.dismiss_timeout_ms.set(settings.dismiss_timeout_ms);
+        if gtk4_layer_shell::is_supported() {
+            apply_layer_shell_position(&self.window, settings);
+        }
     }
 
     pub fn show(&self, provider: Provider) {
@@ -163,10 +216,10 @@ impl PopupWindow {
             state.showing_provider_menu = false;
         }
 
+        self.cancel_pending_dismiss();
         self.apply_provider_styles(provider);
         self.rebuild_content();
 
-        self.position_window();
         self.window.set_visible(true);
         self.window.present();
 
@@ -180,10 +233,10 @@ impl PopupWindow {
             state.showing_provider_menu = true;
         }
 
+        self.cancel_pending_dismiss();
         let content = self.current_content();
         self.rebuild_provider_menu_in(&content, providers);
 
-        self.position_window();
         self.window.set_visible(true);
         self.window.present();
     }
@@ -265,9 +318,10 @@ impl PopupWindow {
         }
     }
 
-    fn position_window(&self) {
-        // Positioning is handled by the compositor on Wayland.
-        // Layer-shell protocols would be needed for precise placement.
+    fn cancel_pending_dismiss(&self) {
+        if let Some(source_id) = self.dismiss_source.take() {
+            source_id.remove();
+        }
     }
 
     fn install_key_controller(&self) {
@@ -984,7 +1038,30 @@ impl PopupWindow {
 impl Drop for PopupWindow {
     fn drop(&mut self) {
         self.stop_live_updates();
+        self.cancel_pending_dismiss();
     }
+}
+
+fn apply_layer_shell_position(window: &adw::Window, settings: &PopupSettings) {
+    let (anchor_v, anchor_h) = match settings.anchor {
+        PopupAnchor::TopLeft => (gtk4_layer_shell::Edge::Top, gtk4_layer_shell::Edge::Left),
+        PopupAnchor::TopRight => (gtk4_layer_shell::Edge::Top, gtk4_layer_shell::Edge::Right),
+        PopupAnchor::BottomLeft => (gtk4_layer_shell::Edge::Bottom, gtk4_layer_shell::Edge::Left),
+        PopupAnchor::BottomRight => (gtk4_layer_shell::Edge::Bottom, gtk4_layer_shell::Edge::Right),
+    };
+
+    window.set_anchor(gtk4_layer_shell::Edge::Top, false);
+    window.set_anchor(gtk4_layer_shell::Edge::Bottom, false);
+    window.set_anchor(gtk4_layer_shell::Edge::Left, false);
+    window.set_anchor(gtk4_layer_shell::Edge::Right, false);
+
+    window.set_anchor(anchor_v, true);
+    window.set_anchor(anchor_h, true);
+
+    window.set_margin(gtk4_layer_shell::Edge::Top, settings.margin_top);
+    window.set_margin(gtk4_layer_shell::Edge::Right, settings.margin_right);
+    window.set_margin(gtk4_layer_shell::Edge::Bottom, settings.margin_bottom);
+    window.set_margin(gtk4_layer_shell::Edge::Left, settings.margin_left);
 }
 
 fn collect_usage_rows(provider: Provider, snapshot: &UsageSnapshot) -> Vec<UsageRow<'_>> {

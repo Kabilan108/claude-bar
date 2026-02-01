@@ -7,10 +7,9 @@ pub fn css_for_provider(provider: Provider) -> String {
         r#"
 @define-color provider_accent {accent};
 
-.popup-window {{
+.popup-frame {{
     background-color: @window_bg_color;
     border-radius: 12px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }}
 
 .provider-switcher {{

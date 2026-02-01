@@ -14,6 +14,7 @@ pub struct Settings {
     pub notifications: NotificationSettings,
     pub theme: ThemeSettings,
     pub shortcuts: ShortcutSettings,
+    pub popup: PopupSettings,
     pub debug: bool,
 }
 
@@ -102,6 +103,40 @@ impl Default for ShortcutSettings {
         Self {
             enabled: true,
             popup: "Ctrl+Shift+U".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PopupAnchor {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PopupSettings {
+    pub anchor: PopupAnchor,
+    pub margin_top: i32,
+    pub margin_right: i32,
+    pub margin_bottom: i32,
+    pub margin_left: i32,
+    pub dismiss_timeout_ms: u64,
+}
+
+impl Default for PopupSettings {
+    fn default() -> Self {
+        Self {
+            anchor: PopupAnchor::TopRight,
+            margin_top: 40,
+            margin_right: 10,
+            margin_bottom: 0,
+            margin_left: 0,
+            dismiss_timeout_ms: 300,
         }
     }
 }
@@ -275,6 +310,9 @@ mod tests {
         assert!(settings.notifications.enabled);
         assert!((settings.notifications.threshold - 0.9).abs() < f64::EPSILON);
         assert!(matches!(settings.theme.mode, ThemeMode::System));
+        assert!(matches!(settings.popup.anchor, PopupAnchor::TopRight));
+        assert_eq!(settings.popup.margin_top, 40);
+        assert_eq!(settings.popup.dismiss_timeout_ms, 300);
     }
 
     #[test]

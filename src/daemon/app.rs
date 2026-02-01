@@ -91,6 +91,7 @@ pub async fn run() -> Result<()> {
             let _ = ui_tx_settings.send(UiCommand::ApplySettings {
                 show_as_remaining: new_settings.display.show_as_remaining,
                 theme_mode: new_settings.theme.mode.clone(),
+                popup: new_settings.popup.clone(),
             });
         }
     });
@@ -119,6 +120,7 @@ pub async fn run() -> Result<()> {
         ui_rx,
         settings.theme.mode,
         settings.display.show_as_remaining,
+        settings.popup.clone(),
         Arc::clone(&tray_manager),
     )
     .await
@@ -190,6 +192,7 @@ enum UiCommand {
     ApplySettings {
         show_as_remaining: bool,
         theme_mode: crate::core::settings::ThemeMode,
+        popup: crate::core::settings::PopupSettings,
     },
 }
 
@@ -197,6 +200,7 @@ async fn run_gtk_main_loop(
     mut ui_rx: mpsc::UnboundedReceiver<UiCommand>,
     theme_mode: crate::core::settings::ThemeMode,
     show_as_remaining: bool,
+    popup_settings: crate::core::settings::PopupSettings,
     tray_manager: Arc<TrayManager>,
 ) -> Result<()> {
     gtk4::init().expect("Failed to initialize GTK4");
@@ -210,7 +214,7 @@ async fn run_gtk_main_loop(
     let tray_manager_theme = Arc::clone(&tray_manager);
     app.connect_activate(move |app| {
         tracing::info!("GTK application activated");
-        let popup = PopupWindow::new(app, theme_mode.clone());
+        let popup = PopupWindow::new(app, theme_mode.clone(), &popup_settings);
         popup.set_show_as_remaining(show_as_remaining);
         *popup_holder_activate.borrow_mut() = Some(popup);
         if matches!(theme_mode, crate::core::settings::ThemeMode::System) {
@@ -281,9 +285,11 @@ fn handle_ui_command(popup: &PopupWindow, cmd: UiCommand) {
         UiCommand::ApplySettings {
             show_as_remaining,
             theme_mode,
+            popup: popup_settings,
         } => {
             popup.set_show_as_remaining(show_as_remaining);
             popup.set_theme_mode(theme_mode);
+            popup.apply_popup_settings(&popup_settings);
         }
     }
 }

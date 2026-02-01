@@ -180,27 +180,23 @@ debug = false  # Enable verbose logging
 
 The daemon watches the config file and reloads settings automatically on changes.
 
-## Window Manager Integration
+## Popup Positioning
 
-### Hyprland
+The popup uses `gtk4-layer-shell` to position itself as a Wayland layer surface, anchored to a screen edge. This eliminates focus-stealing issues on compositors with focus-follows-mouse (e.g. Hyprland). No window manager rules are needed.
 
-Add window rules for the popup:
+Configure the popup position in `config.toml`:
 
-```conf
-windowrulev2 = float, class:^(com.github.kabilan.claude-bar)$
-windowrulev2 = move 100%-400 40, class:^(com.github.kabilan.claude-bar)$
-windowrulev2 = pin, class:^(com.github.kabilan.claude-bar)$
+```toml
+[popup]
+anchor = "top-right"      # top-left | top-right | bottom-left | bottom-right
+margin_top = 40            # pixels from anchored edge
+margin_right = 10
+margin_bottom = 0
+margin_left = 0
+dismiss_timeout_ms = 300   # grace period before closing on focus loss (0 = instant)
 ```
 
-### Sway
-
-```conf
-for_window [app_id="com.github.kabilan.claude-bar"] {
-    floating enable
-    move position 100ppt 40px
-    move left 400px
-}
-```
+Changes are applied immediately via hot-reload.
 
 ## Architecture
 
