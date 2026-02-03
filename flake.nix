@@ -86,6 +86,14 @@
 
           # GTK4 requires these for development
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
+
+          # Match wrapGAppsHook4 environment so cargo-built binaries work
+          GDK_PIXBUF_MODULE_FILE = "${pkgs.librsvg}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache";
+          GIO_EXTRA_MODULES = "${pkgs.dconf.lib}/lib/gio/modules";
+
+          shellHook = ''
+            export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}:$XDG_DATA_DIRS"
+          '';
         };
 
         homeManagerModules.default = import ./nix/hm-module.nix;
