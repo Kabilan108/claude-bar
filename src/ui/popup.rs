@@ -26,18 +26,18 @@ fn label(text: &str, css_class: &str, align: gtk4::Align) -> gtk4::Label {
 
 fn separator() -> gtk4::Separator {
     let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-    sep.set_margin_top(8);
-    sep.set_margin_bottom(8);
+    sep.set_margin_top(12);
+    sep.set_margin_bottom(12);
     sep.add_css_class("section-separator");
     sep
 }
 
 fn build_content_box() -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    content.set_margin_top(8);
-    content.set_margin_bottom(0);
-    content.set_margin_start(16);
-    content.set_margin_end(16);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
     content
 }
 
@@ -404,8 +404,8 @@ impl PopupWindow {
             self.build_error_section(content, error, hint);
         } else if let Some(snapshot) = snapshot {
             let usage_rows = collect_usage_rows(state.provider, snapshot);
-            let accent = provider_rgba(state.provider, 1.0);
-            let trough = provider_rgba(state.provider, 0.25);
+            let accent = provider_rgba(state.provider, 0.75);
+            let trough = provider_rgba(state.provider, 0.12);
             self.build_usage_sections(
                 content,
                 state.provider,
@@ -416,7 +416,6 @@ impl PopupWindow {
             );
 
             if let Some(provider_cost) = snapshot.provider_cost.as_ref() {
-                content.append(&separator());
                 self.build_provider_cost_section(content, provider_cost, &accent, &trough);
             }
 
@@ -468,43 +467,44 @@ impl PopupWindow {
         snapshot: Option<&UsageSnapshot>,
         error: Option<&(String, String)>,
     ) {
-        let header_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        let title_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        let header_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        header_box.set_margin_bottom(4);
 
+        let title_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         let provider_name = label(state.provider.name(), "title-3", gtk4::Align::Start);
         provider_name.set_hexpand(true);
         title_row.append(&provider_name);
 
-        if let Some(email) = snapshot.and_then(|s| s.identity.email.as_ref()) {
-            title_row.append(&label(email, "dim-label", gtk4::Align::End));
+        if let Some(plan) = snapshot.and_then(|s| s.identity.plan.as_ref()) {
+            let plan_badge = label(plan, "plan-badge", gtk4::Align::End);
+            plan_badge.set_valign(gtk4::Align::Center);
+            title_row.append(&plan_badge);
         }
 
         header_box.append(&title_row);
 
         let subtitle_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        let subtitle_text = if error.is_some() {
-            "Unable to load usage"
-        } else if snapshot.is_some() {
-            "Usage limits"
+        let updated_text = if error.is_some() {
+            "Unable to load usage".to_string()
+        } else if let Some(snapshot) = snapshot {
+            format_relative_time(snapshot.updated_at)
         } else {
-            "Loading usage"
+            "Loading\u{2026}".to_string()
         };
-        let subtitle = label(subtitle_text, "subtitle", gtk4::Align::Start);
-        subtitle.set_hexpand(true);
-        subtitle_row.append(&subtitle);
+        let updated_label = label(&updated_text, "header-updated", gtk4::Align::Start);
+        updated_label.set_hexpand(true);
+        subtitle_row.append(&updated_label);
 
-        if let Some(plan) = snapshot.and_then(|s| s.identity.plan.as_ref()) {
-            let plan_badge = label(plan, "plan-badge", gtk4::Align::End);
-            subtitle_row.append(&plan_badge);
+        if let Some(email) = snapshot.and_then(|s| s.identity.email.as_ref()) {
+            subtitle_row.append(&label(email, "dim-label", gtk4::Align::End));
         }
 
         header_box.append(&subtitle_row);
-
         content.append(&header_box);
     }
 
     fn build_provider_switcher(&self, content: &gtk4::Box, state: &ProviderState) {
-        let switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        let switcher = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
         switcher.add_css_class("provider-switcher");
 
         for provider in [Provider::Claude, Provider::Codex] {
@@ -514,9 +514,9 @@ impl PopupWindow {
                 button.add_css_class("selected");
             }
 
-            let inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            let inner = gtk4::Box::new(gtk4::Orientation::Horizontal, 5);
             let dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-            dot.set_size_request(8, 8);
+            dot.set_size_request(6, 6);
             dot.add_css_class("provider-dot");
             match provider {
                 Provider::Claude => dot.add_css_class("provider-dot-claude"),
@@ -574,8 +574,8 @@ impl PopupWindow {
         trough: &gdk::RGBA,
         show_pace: bool,
     ) {
-        let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        section.set_margin_top(8);
+        let section = gtk4::Box::new(gtk4::Orientation::Vertical, 3);
+        section.set_margin_top(10);
         section.append(&label(title, "heading", gtk4::Align::Start));
 
         let progress_bar = UsageProgressBar::new();
@@ -631,7 +631,8 @@ impl PopupWindow {
         cost: Option<&CostSnapshot>,
         tokens: Option<&CostUsageTokenSnapshot>,
     ) {
-        let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        let section = gtk4::Box::new(gtk4::Orientation::Vertical, 3);
+        section.set_margin_top(4);
         section.append(&label("Cost", "heading", gtk4::Align::Start));
 
         if let Some(cost) = cost {
@@ -742,7 +743,8 @@ impl PopupWindow {
 
         let percent_used = (cost.used / cost.limit).clamp(0.0, 1.0);
 
-        let section = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        let section = gtk4::Box::new(gtk4::Orientation::Vertical, 3);
+        section.set_margin_top(14);
         section.append(&label(&title, "heading", gtk4::Align::Start));
 
         let progress_bar = UsageProgressBar::new();
@@ -765,22 +767,10 @@ impl PopupWindow {
         content.append(&section);
     }
 
-    fn build_footer_actions(&self, content: &gtk4::Box, updated_at: Option<DateTime<Utc>>) {
-        if let Some(updated_at) = updated_at {
-            let footer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-            footer.set_margin_top(8);
-            footer.set_margin_bottom(6);
-            let updated_label = label(
-                &format_relative_time(updated_at),
-                "footer-label",
-                gtk4::Align::Start,
-            );
-            updated_label.set_hexpand(true);
-            footer.append(&updated_label);
-            content.append(&footer);
-        }
+    fn build_footer_actions(&self, content: &gtk4::Box, _updated_at: Option<DateTime<Utc>>) {
+        content.append(&separator());
 
-        let actions = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        let actions = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
         actions.add_css_class("footer-actions");
 
         let provider = self.provider_state.borrow().provider;
@@ -805,17 +795,15 @@ impl PopupWindow {
                 popup.open_settings_window();
             }
         }));
-        actions.append(&self.action_button("About", {
-            let popup = self.clone();
-            move || {
-                popup.open_about_window();
-            }
-        }));
-        actions.append(&self.action_button("Quit", move || {
-            std::process::exit(0);
-        }));
-
         content.append(&actions);
+
+        let version_label = label(
+            &format!("Claude Bar v{}", env!("CARGO_PKG_VERSION")),
+            "version-footer",
+            gtk4::Align::Center,
+        );
+        version_label.set_margin_top(8);
+        content.append(&version_label);
     }
 
     fn action_button<F>(&self, label_text: &str, action: F) -> gtk4::Button
@@ -991,16 +979,6 @@ impl PopupWindow {
         page.add(&shortcuts_group);
         window.add(&page);
         window.present();
-    }
-
-    fn open_about_window(&self) {
-        let dialog = gtk4::AboutDialog::builder()
-            .transient_for(&self.window)
-            .modal(true)
-            .program_name("Claude Bar")
-            .version(env!("CARGO_PKG_VERSION"))
-            .build();
-        dialog.present();
     }
 
     fn start_live_updates(&self) {

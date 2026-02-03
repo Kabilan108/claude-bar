@@ -87,8 +87,8 @@ mod imp {
             Self {
                 progress: Cell::new(0.0),
                 label: RefCell::new(String::new()),
-                accent: RefCell::new(gdk::RGBA::new(0.96, 0.65, 0.14, 1.0)),
-                trough: RefCell::new(gdk::RGBA::new(0.2, 0.2, 0.2, 0.3)),
+                accent: RefCell::new(gdk::RGBA::new(0.96, 0.65, 0.14, 0.85)),
+                trough: RefCell::new(gdk::RGBA::new(0.25, 0.25, 0.25, 0.2)),
                 pace_marker: Cell::new(-1.0),
                 pace_deficit: Cell::new(false),
             }
@@ -106,7 +106,7 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
-            obj.set_height_request(8);
+            obj.set_height_request(5);
             obj.add_css_class("usage-progress-bar");
         }
     }
@@ -147,11 +147,11 @@ mod imp {
             if (0.0..=1.0).contains(&marker) {
                 let x = (width * marker) as f32;
                 let color = if self.pace_deficit.get() {
-                    gdk::RGBA::new(1.0, 0.0, 0.0, 0.8)
+                    gdk::RGBA::new(0.9, 0.3, 0.3, 0.7)
                 } else {
-                    gdk::RGBA::new(0.0, 0.7, 0.2, 0.8)
+                    gdk::RGBA::new(0.3, 0.7, 0.4, 0.7)
                 };
-                let rect = gtk4::graphene::Rect::new(x - 1.0, 0.0, 2.0, height as f32);
+                let rect = gtk4::graphene::Rect::new(x - 0.75, 0.0, 1.5, height as f32);
                 snapshot.append_color(&color, &rect);
             }
         }
@@ -159,7 +159,7 @@ mod imp {
         fn measure(&self, orientation: gtk4::Orientation, _for_size: i32) -> (i32, i32, i32, i32) {
             match orientation {
                 gtk4::Orientation::Horizontal => (100, 200, -1, -1),
-                gtk4::Orientation::Vertical => (8, 8, -1, -1),
+                gtk4::Orientation::Vertical => (5, 5, -1, -1),
                 _ => (0, 0, -1, -1),
             }
         }
