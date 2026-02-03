@@ -13,18 +13,18 @@ pub fn css_for_provider(provider: Provider) -> String {
     border-radius: 14px;
     border: 1px solid alpha(@theme_fg_color, 0.06);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12);
-    padding: 4px;
+    padding: 2px;
 }}
 
 .provider-switcher {{
-    margin-bottom: 12px;
-    padding: 4px;
+    margin-bottom: 8px;
+    padding: 3px;
     background-color: alpha(@theme_fg_color, 0.04);
     border-radius: 10px;
 }}
 
 .provider-tab {{
-    padding: 6px 12px;
+    padding: 5px 10px;
     background: transparent;
     border: none;
     border-radius: 8px;
@@ -122,12 +122,11 @@ pub fn css_for_provider(provider: Provider) -> String {
 }}
 
 .footer-actions {{
-    margin-top: 8px;
-    padding-top: 4px;
+    margin-top: 4px;
 }}
 
 .footer-action {{
-    padding: 6px 8px;
+    padding: 4px 8px;
     background: transparent;
     border: none;
     border-radius: 8px;

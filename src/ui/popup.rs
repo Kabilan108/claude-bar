@@ -34,10 +34,10 @@ fn separator() -> gtk4::Separator {
 
 fn build_content_box() -> gtk4::Box {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(18);
-    content.set_margin_end(18);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_start(14);
+    content.set_margin_end(14);
     content
 }
 
@@ -510,6 +510,7 @@ impl PopupWindow {
         for provider in [Provider::Claude, Provider::Codex] {
             let button = gtk4::Button::new();
             button.add_css_class("provider-tab");
+            button.set_hexpand(true);
             if provider == state.provider {
                 button.add_css_class("selected");
             }
@@ -770,7 +771,7 @@ impl PopupWindow {
     fn build_footer_actions(&self, content: &gtk4::Box, _updated_at: Option<DateTime<Utc>>) {
         content.append(&separator());
 
-        let actions = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        let actions = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         actions.add_css_class("footer-actions");
 
         let provider = self.provider_state.borrow().provider;
@@ -812,7 +813,10 @@ impl PopupWindow {
     {
         let button = gtk4::Button::with_label(label_text);
         button.add_css_class("footer-action");
-        button.set_halign(gtk4::Align::Start);
+        button.set_halign(gtk4::Align::Fill);
+        if let Some(child) = button.child().and_then(|c| c.downcast::<gtk4::Label>().ok()) {
+            child.set_halign(gtk4::Align::Start);
+        }
         button.connect_clicked(move |_| {
             action();
         });

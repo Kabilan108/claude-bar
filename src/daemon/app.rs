@@ -203,8 +203,20 @@ async fn run_gtk_main_loop(
     popup_settings: crate::core::settings::PopupSettings,
     tray_manager: Arc<TrayManager>,
 ) -> Result<()> {
+    // libadwaita manages its own Adwaita-based theming; custom GTK themes
+    // (via GTK_THEME or ~/.config/gtk-4.0/gtk.css) are unsupported and cause
+    // warnings about missing GResource bundles.
+    std::env::remove_var("GTK_THEME");
+
     gtk4::init().expect("Failed to initialize GTK4");
     adw::init().expect("Failed to initialize libadwaita");
+
+    // The system gsettings color-scheme sets the deprecated GTK3-era
+    // gtk-application-prefer-dark-theme property. Reset it so libadwaita's
+    // AdwStyleManager is the sole dark-mode handler.
+    if let Some(settings) = gtk4::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(false);
+    }
 
     let app = adw::Application::builder().application_id(APP_ID).build();
     let popup_holder: Rc<RefCell<Option<PopupWindow>>> = Rc::new(RefCell::new(None));
