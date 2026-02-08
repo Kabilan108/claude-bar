@@ -389,6 +389,17 @@ impl TrayManager {
         }
     }
 
+    pub async fn set_theme_mode(&self, theme_mode: ThemeMode) {
+        let mut inner = self.inner.write().await;
+        inner.theme_mode = theme_mode.clone();
+        for state in inner.states.values() {
+            let mode = theme_mode.clone();
+            state.sync_to_tray(move |tray| {
+                tray.theme_mode = mode;
+            });
+        }
+    }
+
     pub async fn tick_animation(&self) {
         let mut inner = self.inner.write().await;
         for state in inner.states.values_mut() {

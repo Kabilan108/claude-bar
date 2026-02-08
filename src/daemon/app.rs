@@ -85,9 +85,9 @@ pub async fn run() -> Result<()> {
     let ui_tx_settings = ui_tx.clone();
     tokio::spawn(async move {
         while let Ok(new_settings) = settings_rx.recv().await {
-            if let Err(e) = tray_for_settings.apply_settings(&new_settings).await {
-                tracing::warn!(error = %e, "Failed to apply tray settings");
-            }
+            tray_for_settings
+                .set_theme_mode(new_settings.theme.mode.clone())
+                .await;
             let _ = ui_tx_settings.send(UiCommand::ApplySettings {
                 show_as_remaining: new_settings.display.show_as_remaining,
                 theme_mode: new_settings.theme.mode.clone(),
