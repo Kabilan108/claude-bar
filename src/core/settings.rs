@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub providers: ProviderSettings,
@@ -18,7 +18,7 @@ pub struct Settings {
     pub debug: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderSettings {
     pub claude: ProviderConfig,
@@ -36,7 +36,7 @@ impl Default for ProviderSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub enabled: bool,
@@ -48,19 +48,19 @@ impl Default for ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplaySettings {
     pub show_as_remaining: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BrowserSettings {
     pub preferred: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotificationSettings {
     pub enabled: bool,
@@ -76,7 +76,7 @@ impl Default for NotificationSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
     #[default]
@@ -85,13 +85,13 @@ pub enum ThemeMode {
     Dark,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeSettings {
     pub mode: ThemeMode,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShortcutSettings {
     pub enabled: bool,
@@ -107,7 +107,7 @@ impl Default for ShortcutSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PopupAnchor {
     TopLeft,
@@ -117,7 +117,7 @@ pub enum PopupAnchor {
     BottomRight,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PopupSettings {
     pub anchor: PopupAnchor,
@@ -227,6 +227,10 @@ impl SettingsWatcher {
         let settings_clone = Arc::clone(&self.settings);
         let update_tx_clone = self.update_tx.clone();
         let config_path_clone = config_path.clone();
+        let config_file_name = config_path
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_default();
 
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -234,7 +238,13 @@ impl SettingsWatcher {
             move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
                     if event.kind.is_modify() || event.kind.is_create() {
-                        let _ = tx.send(());
+                        let touches_config = event
+                            .paths
+                            .iter()
+                            .any(|path| path.file_name() == Some(config_file_name.as_os_str()));
+                        if touches_config {
+                            let _ = tx.send(());
+                        }
                     }
                 }
             },
@@ -251,6 +261,7 @@ impl SettingsWatcher {
         tokio::spawn(async move {
             while rx.recv().is_ok() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                while rx.try_recv().is_ok() {}
 
                 match Settings::load() {
                     Ok(new_settings) => {
@@ -259,9 +270,14 @@ impl SettingsWatcher {
                             continue;
                         }
 
-                        tracing::info!(?config_path_clone, "Config reloaded");
+                        let mut current_settings = settings_clone.write().await;
+                        if *current_settings == new_settings {
+                            tracing::debug!(?config_path_clone, "Config unchanged, skipping reload");
+                            continue;
+                        }
 
-                        *settings_clone.write().await = new_settings.clone();
+                        tracing::info!(?config_path_clone, "Config reloaded");
+                        *current_settings = new_settings.clone();
                         let _ = update_tx_clone.send(new_settings);
                     }
                     Err(e) => {
@@ -361,5 +377,20 @@ mod tests {
         assert!(!settings.notifications.enabled);
         assert!((settings.notifications.threshold - 0.85).abs() < f64::EPSILON);
         assert!(matches!(settings.theme.mode, ThemeMode::Dark));
+    }
+
+    #[test]
+    fn test_settings_equality_for_noop_reload() {
+        let current = Settings::default();
+        let next = current.clone();
+        assert_eq!(current, next);
+    }
+
+    #[test]
+    fn test_settings_inequality_for_real_reload() {
+        let current = Settings::default();
+        let mut next = current.clone();
+        next.providers.merge_icons = !next.providers.merge_icons;
+        assert_ne!(current, next);
     }
 }

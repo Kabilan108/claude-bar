@@ -424,9 +424,24 @@ impl TrayManager {
     }
 
     pub async fn shutdown(&self) {
-        let mut inner = self.inner.write().await;
-        inner.states.clear();
-        tracing::info!("Tray icons shut down");
+        let handles: Vec<Handle<ClaudeBarTray>> = {
+            let mut inner = self.inner.write().await;
+            let mut handles = Vec::new();
+            for state in inner.states.values_mut() {
+                if let Some(handle) = state.handle.take() {
+                    handles.push(handle);
+                }
+            }
+            inner.states.clear();
+            handles
+        };
+
+        let shutdown_count = handles.len();
+        shutdown_all_handles(handles, |handle| async move {
+            handle.shutdown().await;
+        })
+        .await;
+        tracing::info!(shutdown_count, "Tray icons shut down");
     }
 
     #[allow(dead_code)]
@@ -442,6 +457,16 @@ impl Default for TrayManager {
     }
 }
 
+async fn shutdown_all_handles<T, F, Fut>(handles: Vec<T>, mut shutdown: F)
+where
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    for handle in handles {
+        shutdown(handle).await;
+    }
+}
+
 pub async fn run_animation_loop(tray_manager: Arc<TrayManager>) {
     let mut interval = tokio::time::interval(ANIMATION_INTERVAL);
 
@@ -454,6 +479,8 @@ pub async fn run_animation_loop(tray_manager: Arc<TrayManager>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_argb_conversion() {
@@ -466,5 +493,27 @@ mod tests {
     async fn test_tray_manager_creation() {
         let manager = TrayManager::new();
         assert!(!manager.is_merged_mode().await);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_all_handles_invokes_every_handle_once() {
+        let called = Arc::new(AtomicUsize::new(0));
+        let handles = vec![1, 2, 3, 4, 5];
+        let called_clone = Arc::clone(&called);
+
+        shutdown_all_handles(handles, move |_h| {
+            let called = Arc::clone(&called_clone);
+            async move {
+                called.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .await;
+
+        assert_eq!(called.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_all_handles_handles_empty_input() {
+        shutdown_all_handles::<u8, _, _>(Vec::new(), |_h| async move {}).await;
     }
 }
