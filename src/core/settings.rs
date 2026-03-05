@@ -3,7 +3,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -216,7 +216,10 @@ impl SettingsWatcher {
         };
 
         if !config_path.exists() {
-            tracing::info!(?config_path, "Config file does not exist, hot-reload waiting");
+            tracing::info!(
+                ?config_path,
+                "Config file does not exist, hot-reload waiting"
+            );
             if let Some(parent) = config_path.parent() {
                 if !parent.exists() {
                     std::fs::create_dir_all(parent)?;
@@ -232,7 +235,7 @@ impl SettingsWatcher {
             .map(std::ffi::OsStr::to_os_string)
             .unwrap_or_default();
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
 
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<notify::Event>| {
@@ -259,7 +262,7 @@ impl SettingsWatcher {
         tracing::info!(?watch_path, "Started watching config directory");
 
         tokio::spawn(async move {
-            while rx.recv().is_ok() {
+            while rx.recv().await.is_some() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 while rx.try_recv().is_ok() {}
 
@@ -272,7 +275,10 @@ impl SettingsWatcher {
 
                         let mut current_settings = settings_clone.write().await;
                         if *current_settings == new_settings {
-                            tracing::debug!(?config_path_clone, "Config unchanged, skipping reload");
+                            tracing::debug!(
+                                ?config_path_clone,
+                                "Config unchanged, skipping reload"
+                            );
                             continue;
                         }
 

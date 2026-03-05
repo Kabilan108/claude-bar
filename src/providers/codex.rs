@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 const DEFAULT_CREDENTIALS_PATH: &str = ".codex/auth.json";
@@ -50,6 +51,7 @@ struct RateLimitWindow {
 
 pub struct CodexProvider {
     credentials_path: PathBuf,
+    http_client: reqwest::Client,
 }
 
 impl CodexProvider {
@@ -62,7 +64,18 @@ impl CodexProvider {
                     .unwrap_or_else(|| PathBuf::from(DEFAULT_CREDENTIALS_PATH))
             });
 
-        Self { credentials_path }
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to build configured HTTP client; falling back to default");
+                reqwest::Client::new()
+            });
+
+        Self {
+            credentials_path,
+            http_client,
+        }
     }
 
     fn load_credentials(&self) -> Result<TokenData> {
@@ -92,7 +105,10 @@ impl CodexProvider {
         })
     }
 
-    fn window_to_rate_window(window: Option<&RateLimitWindow>, description: &str) -> Option<RateWindow> {
+    fn window_to_rate_window(
+        window: Option<&RateLimitWindow>,
+        description: &str,
+    ) -> Option<RateWindow> {
         window.map(|w| {
             let window_minutes = w.limit_window_seconds.map(|s| s / 60);
             RateWindow {
@@ -105,23 +121,21 @@ impl CodexProvider {
     }
 
     fn format_plan_type(plan_type: Option<&str>) -> Option<String> {
-        plan_type.map(|p| {
-            match p.to_lowercase().as_str() {
-                "guest" => "ChatGPT Guest".to_string(),
-                "plus" => "ChatGPT Plus".to_string(),
-                "pro" => "ChatGPT Pro".to_string(),
-                "team" => "ChatGPT Team".to_string(),
-                "business" => "ChatGPT Business".to_string(),
-                "education" => "ChatGPT Education".to_string(),
-                "free_workspace" => "ChatGPT Free Workspace".to_string(),
-                "go" => "ChatGPT Go".to_string(),
-                "k12" => "ChatGPT K12".to_string(),
-                "edu" => "ChatGPT EDU".to_string(),
-                "quorum" => "ChatGPT Quorum".to_string(),
-                "enterprise" => "ChatGPT Enterprise".to_string(),
-                "free" => "ChatGPT Free".to_string(),
-                _ => format!("ChatGPT {}", p),
-            }
+        plan_type.map(|p| match p.to_lowercase().as_str() {
+            "guest" => "ChatGPT Guest".to_string(),
+            "plus" => "ChatGPT Plus".to_string(),
+            "pro" => "ChatGPT Pro".to_string(),
+            "team" => "ChatGPT Team".to_string(),
+            "business" => "ChatGPT Business".to_string(),
+            "education" => "ChatGPT Education".to_string(),
+            "free_workspace" => "ChatGPT Free Workspace".to_string(),
+            "go" => "ChatGPT Go".to_string(),
+            "k12" => "ChatGPT K12".to_string(),
+            "edu" => "ChatGPT EDU".to_string(),
+            "quorum" => "ChatGPT Quorum".to_string(),
+            "enterprise" => "ChatGPT Enterprise".to_string(),
+            "free" => "ChatGPT Free".to_string(),
+            _ => format!("ChatGPT {}", p),
         })
     }
 
@@ -225,10 +239,11 @@ impl CodexProvider {
         let profile = payload
             .get("https://api.openai.com/profile")
             .and_then(|v| v.as_object());
-        let email = payload
-            .get("email")
-            .and_then(|v| v.as_str())
-            .or_else(|| profile.and_then(|p| p.get("email")).and_then(|v| v.as_str()))?;
+        let email = payload.get("email").and_then(|v| v.as_str()).or_else(|| {
+            profile
+                .and_then(|p| p.get("email"))
+                .and_then(|v| v.as_str())
+        })?;
         let trimmed = email.trim();
         if trimmed.is_empty() {
             None
@@ -277,23 +292,20 @@ impl UsageProvider for CodexProvider {
         if let Some(expires_at_ms) = credentials.expires_at {
             let now_ms = chrono::Utc::now().timestamp_millis();
             if now_ms >= expires_at_ms - 60_000 {
-                anyhow::bail!(
-                    "Codex token expired. Waiting for Codex to refresh credentials."
-                );
+                anyhow::bail!("Codex token expired. Waiting for Codex to refresh credentials.");
             }
         }
 
         let usage_url = Self::resolve_usage_url();
         debug!("Fetching Codex usage from {}", usage_url);
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("Failed to build HTTP client")?;
-
-        let mut request = client
+        let mut request = self
+            .http_client
             .get(&usage_url)
-            .header("Authorization", format!("Bearer {}", credentials.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", credentials.access_token),
+            )
             .header("Accept", "application/json")
             .header("User-Agent", "claude-bar");
 
@@ -303,7 +315,10 @@ impl UsageProvider for CodexProvider {
             }
         }
 
-        let response = request.send().await.context("Failed to fetch Codex usage")?;
+        let response = request
+            .send()
+            .await
+            .context("Failed to fetch Codex usage")?;
 
         let status = response.status();
         if !status.is_success() {
@@ -517,6 +532,9 @@ mod tests {
             provider.dashboard_url(),
             "https://chatgpt.com/codex/settings/usage"
         );
-        assert_eq!(provider.credential_error_hint(), "Run `codex` to authenticate");
+        assert_eq!(
+            provider.credential_error_hint(),
+            "Run `codex` to authenticate"
+        );
     }
 }

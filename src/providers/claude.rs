@@ -4,11 +4,12 @@ use crate::core::models::{
 use crate::providers::UsageProvider;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 #[cfg(test)]
 use chrono::Datelike;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 const DEFAULT_CREDENTIALS_PATH: &str = ".claude/.credentials.json";
@@ -63,6 +64,7 @@ struct OAuthExtraUsage {
 
 pub struct ClaudeProvider {
     credentials_path: PathBuf,
+    http_client: reqwest::Client,
 }
 
 impl ClaudeProvider {
@@ -71,7 +73,18 @@ impl ClaudeProvider {
             .map(|p| p.join(DEFAULT_CREDENTIALS_PATH))
             .unwrap_or_else(|| PathBuf::from(DEFAULT_CREDENTIALS_PATH));
 
-        Self { credentials_path }
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to build configured HTTP client; falling back to default");
+                reqwest::Client::new()
+            });
+
+        Self {
+            credentials_path,
+            http_client,
+        }
     }
 
     fn load_credentials(&self) -> Result<ClaudeOAuthCredentials> {
@@ -136,7 +149,10 @@ impl ClaudeProvider {
         None
     }
 
-    fn map_extra_usage(extra: &Option<OAuthExtraUsage>, plan: Option<&str>) -> Option<ProviderCostSnapshot> {
+    fn map_extra_usage(
+        extra: &Option<OAuthExtraUsage>,
+        plan: Option<&str>,
+    ) -> Option<ProviderCostSnapshot> {
         let extra = extra.as_ref()?;
         if extra.is_enabled != Some(true) {
             return None;
@@ -219,14 +235,13 @@ impl UsageProvider for ClaudeProvider {
 
         debug!("Fetching Claude usage from {}", API_ENDPOINT);
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("Failed to build HTTP client")?;
-
-        let response = client
+        let response = self
+            .http_client
             .get(API_ENDPOINT)
-            .header("Authorization", format!("Bearer {}", credentials.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", credentials.access_token),
+            )
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
             .header("anthropic-beta", "oauth-2025-04-20")
@@ -263,8 +278,7 @@ impl UsageProvider for ClaudeProvider {
             .seven_day_sonnet
             .as_ref()
             .or(usage.seven_day_opus.as_ref());
-        let tertiary =
-            Self::window_to_rate_window(model_specific, 10080, "Model weekly");
+        let tertiary = Self::window_to_rate_window(model_specific, 10080, "Model weekly");
 
         let mut carveouts = Vec::new();
         if let Some(window) =
@@ -457,8 +471,7 @@ mod tests {
             currency: Some("USD".to_string()),
         };
 
-        let snapshot =
-            ClaudeProvider::map_extra_usage(&Some(extra), Some("Claude Pro")).unwrap();
+        let snapshot = ClaudeProvider::map_extra_usage(&Some(extra), Some("Claude Pro")).unwrap();
         assert!((snapshot.used - 23.45).abs() < 0.001);
         assert!((snapshot.limit - 123.45).abs() < 0.001);
         assert_eq!(snapshot.currency_code, "USD");
@@ -474,8 +487,7 @@ mod tests {
             currency: Some("USD".to_string()),
         };
 
-        let snapshot =
-            ClaudeProvider::map_extra_usage(&Some(extra), Some("Claude Pro")).unwrap();
+        let snapshot = ClaudeProvider::map_extra_usage(&Some(extra), Some("Claude Pro")).unwrap();
         assert!((snapshot.used - 5.0).abs() < 0.001);
         assert!((snapshot.limit - 25.0).abs() < 0.001);
     }
@@ -489,6 +501,9 @@ mod tests {
             provider.dashboard_url(),
             "https://console.anthropic.com/settings/billing"
         );
-        assert_eq!(provider.credential_error_hint(), "Run `claude` to authenticate");
+        assert_eq!(
+            provider.credential_error_hint(),
+            "Run `claude` to authenticate"
+        );
     }
 }

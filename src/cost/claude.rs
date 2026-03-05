@@ -42,7 +42,7 @@ impl ClaudeCostScanner {
                             if file_date >= since && file_date <= until {
                                 files.push(entry);
                             }
-                        } else {
+                        } else if Self::file_mtime_in_range(&entry, since, until) {
                             files.push(entry);
                         }
                     }
@@ -73,6 +73,17 @@ impl ClaudeCostScanner {
     fn extract_date_from_path(path: &Path) -> Option<NaiveDate> {
         let file_name = path.file_stem()?.to_str()?;
         NaiveDate::parse_from_str(file_name, "%Y-%m-%d").ok()
+    }
+
+    fn file_mtime_in_range(path: &Path, since: NaiveDate, until: NaiveDate) -> bool {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return true;
+        };
+        let Ok(modified) = metadata.modified() else {
+            return true;
+        };
+        let modified_date = chrono::DateTime::<chrono::Local>::from(modified).date_naive();
+        modified_date >= since && modified_date <= until
     }
 
     fn parse_file(
@@ -256,7 +267,8 @@ mod tests {
 
     #[test]
     fn test_skip_non_assistant_entries() {
-        let json = r#"{"type":"user","timestamp":"2026-01-18T12:00:00Z","message":{"content":"hello"}}"#;
+        let json =
+            r#"{"type":"user","timestamp":"2026-01-18T12:00:00Z","message":{"content":"hello"}}"#;
         let entry: RawLogEntry = serde_json::from_str(json).unwrap();
         assert_eq!(entry.entry_type, "user");
     }

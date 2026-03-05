@@ -1,6 +1,6 @@
 use crate::core::models::Provider;
-use crate::core::settings::ThemeMode;
 use crate::core::settings::Settings;
+use crate::core::settings::ThemeMode;
 use crate::icons::{IconRenderer, IconState};
 use ksni::{self, menu::StandardItem, Handle, MenuItem, Tray, TrayMethods};
 use std::collections::HashMap;
@@ -400,8 +400,9 @@ impl TrayManager {
         }
     }
 
-    pub async fn tick_animation(&self) {
+    pub async fn tick_animation(&self) -> bool {
         let mut inner = self.inner.write().await;
+        let mut updated = false;
         for state in inner.states.values_mut() {
             if state.state == IconState::Loading {
                 state.animation_phase += std::f64::consts::PI / 30.0;
@@ -409,8 +410,10 @@ impl TrayManager {
                 state.sync_to_tray(move |tray| {
                     tray.animation_phase = phase;
                 });
+                updated = true;
             }
         }
+        updated
     }
 
     pub async fn should_refresh(&self, provider: Provider) -> bool {
@@ -483,15 +486,18 @@ pub async fn run_animation_loop(tray_manager: Arc<TrayManager>) {
 
     loop {
         interval.tick().await;
-        tray_manager.tick_animation().await;
+        if !tray_manager.tick_animation().await {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            interval = tokio::time::interval(ANIMATION_INTERVAL);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn test_argb_conversion() {

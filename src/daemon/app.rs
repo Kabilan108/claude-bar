@@ -9,16 +9,16 @@ use crate::daemon::tray::{run_animation_loop, TrayEvent, TrayManager};
 use crate::providers::ProviderRegistry;
 use crate::ui::PopupWindow;
 use anyhow::Result;
-use gtk4::glib;
-use gtk4::prelude::*;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager};
+use gtk4::glib;
+use gtk4::prelude::*;
 use libadwaita as adw;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 
 const APP_ID: &str = "com.github.kabilan.claude-bar";
@@ -138,7 +138,7 @@ async fn handle_dbus_commands(
         match cmd {
             DbusCommand::Refresh => {
                 tracing::info!("D-Bus refresh command received");
-                for provider in [Provider::Claude, Provider::Codex] {
+                for provider in registry.enabled_provider_ids() {
                     tray.set_loading(provider).await;
                     refresh_provider(&registry, &store, &tray, &ui_tx, provider).await;
                 }
@@ -242,19 +242,75 @@ async fn run_gtk_main_loop(
     app.register(None::<&gtk4::gio::Cancellable>)?;
     app.activate();
 
-    let popup_holder_idle = popup_holder.clone();
-    glib::idle_add_local(move || {
-        if let Ok(cmd) = ui_rx.try_recv() {
-            if let Some(popup) = popup_holder_idle.borrow().as_ref() {
+    let main_context = glib::MainContext::default();
+    let pending_ui = Arc::new(Mutex::new(VecDeque::<UiCommand>::new()));
+    let pending_ui_writer = Arc::clone(&pending_ui);
+    let wake_context = main_context.clone();
+
+    tokio::spawn(async move {
+        while let Some(cmd) = ui_rx.recv().await {
+            let Ok(mut queue) = pending_ui_writer.lock() else {
+                break;
+            };
+            queue.push_back(cmd);
+            wake_context.wakeup();
+        }
+    });
+
+    let mut telemetry_start = Instant::now();
+    let mut telemetry_iterations: u64 = 0;
+    let mut telemetry_processed_cmds: u64 = 0;
+    let mut telemetry_max_queue_depth: usize = 0;
+    let mut telemetry_max_batch: usize = 0;
+    let mut telemetry_short_idle_wakes: u64 = 0;
+
+    loop {
+        let iteration_start = Instant::now();
+        main_context.iteration(true);
+        telemetry_iterations = telemetry_iterations.saturating_add(1);
+
+        let mut drained = Vec::new();
+        let mut current_queue_depth = 0usize;
+        if let Ok(mut queue) = pending_ui.lock() {
+            current_queue_depth = queue.len();
+            telemetry_max_queue_depth = telemetry_max_queue_depth.max(current_queue_depth);
+            drained.extend(queue.drain(..));
+        }
+        telemetry_max_batch = telemetry_max_batch.max(drained.len());
+        telemetry_processed_cmds = telemetry_processed_cmds.saturating_add(drained.len() as u64);
+
+        if drained.is_empty() && iteration_start.elapsed() <= Duration::from_millis(1) {
+            telemetry_short_idle_wakes = telemetry_short_idle_wakes.saturating_add(1);
+        }
+
+        if let Some(popup) = popup_holder.borrow().as_ref() {
+            for cmd in drained {
                 handle_ui_command(popup, cmd);
             }
         }
-        glib::ControlFlow::Continue
-    });
 
-    let main_context = glib::MainContext::default();
-    loop {
-        main_context.iteration(true);
+        let elapsed = telemetry_start.elapsed();
+        if elapsed >= Duration::from_secs(30) {
+            let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+            tracing::info!(
+                component = "gtk-main-loop",
+                window_secs = elapsed_secs,
+                iterations = telemetry_iterations,
+                iterations_per_sec = telemetry_iterations as f64 / elapsed_secs,
+                processed_ui_cmds = telemetry_processed_cmds,
+                max_queue_depth = telemetry_max_queue_depth,
+                max_batch = telemetry_max_batch,
+                short_idle_wakes = telemetry_short_idle_wakes,
+                current_queue_depth,
+                "Daemon loop telemetry"
+            );
+            telemetry_start = Instant::now();
+            telemetry_iterations = 0;
+            telemetry_processed_cmds = 0;
+            telemetry_max_queue_depth = 0;
+            telemetry_max_batch = 0;
+            telemetry_short_idle_wakes = 0;
+        }
     }
 }
 
@@ -360,7 +416,7 @@ async fn handle_tray_event(
         }
         TrayEvent::RefreshRequested => {
             tracing::info!("Manual refresh requested");
-            for provider in [Provider::Claude, Provider::Codex] {
+            for provider in registry.enabled_provider_ids() {
                 tray.set_loading(provider).await;
             }
 
@@ -399,36 +455,43 @@ async fn run_polling_loop(
     ui_tx: mpsc::UnboundedSender<UiCommand>,
     mut cred_change_rx: mpsc::UnboundedReceiver<Provider>,
 ) {
-    for provider in [Provider::Claude, Provider::Codex] {
-        retry_states.write().await.insert(provider, RetryState::new());
+    let providers = registry.enabled_provider_ids();
+
+    {
+        let mut states = retry_states.write().await;
+        for &provider in &providers {
+            states.insert(provider, RetryState::new());
+        }
     }
 
-    for provider in [Provider::Claude, Provider::Codex] {
-        refresh_provider_with_retry(
-            &registry,
-            &store,
-            &tray,
-            &retry_states,
-            &ui_tx,
-            provider,
-        )
-        .await;
+    for &provider in &providers {
+        refresh_provider_with_retry(&registry, &store, &tray, &retry_states, &ui_tx, provider)
+            .await;
     }
 
-    let mut check_interval = tokio::time::interval(Duration::from_secs(1));
+    let mut check_interval = tokio::time::interval(Duration::from_secs(5));
+    let mut telemetry_start = Instant::now();
+    let mut telemetry_ticks: u64 = 0;
+    let mut telemetry_refresh_attempts: u64 = 0;
+    let mut telemetry_credential_events: u64 = 0;
 
     loop {
         tokio::select! {
             _ = check_interval.tick() => {
-                for provider in [Provider::Claude, Provider::Codex] {
-                    let should_poll = {
+                telemetry_ticks = telemetry_ticks.saturating_add(1);
+                for &provider in &providers {
+                    let delay = {
                         let states = retry_states.read().await;
-                        let state = states.get(&provider).cloned().unwrap_or_default();
-                        let delay = state.current_delay();
-                        store.should_refresh(provider, delay).await
+                        states
+                            .get(&provider)
+                            .cloned()
+                            .unwrap_or_default()
+                            .current_delay()
                     };
+                    let should_poll = store.should_refresh(provider, delay).await;
 
                     if should_poll {
+                        telemetry_refresh_attempts = telemetry_refresh_attempts.saturating_add(1);
                         refresh_provider_with_retry(
                             &registry,
                             &store,
@@ -442,6 +505,8 @@ async fn run_polling_loop(
                 }
             }
             Some(provider) = cred_change_rx.recv() => {
+                telemetry_credential_events = telemetry_credential_events.saturating_add(1);
+                telemetry_refresh_attempts = telemetry_refresh_attempts.saturating_add(1);
                 tracing::info!(
                     ?provider,
                     "Credentials changed on disk, resetting retry state"
@@ -464,6 +529,33 @@ async fn run_polling_loop(
                 .await;
             }
         }
+
+        let elapsed = telemetry_start.elapsed();
+        if elapsed >= Duration::from_secs(60) {
+            let providers_in_backoff = {
+                let states = retry_states.read().await;
+                states
+                    .values()
+                    .filter(|state| state.is_in_backoff())
+                    .count()
+            };
+            let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+            tracing::info!(
+                component = "provider-poll-loop",
+                window_secs = elapsed_secs,
+                enabled_providers = providers.len(),
+                ticks = telemetry_ticks,
+                tick_rate_hz = telemetry_ticks as f64 / elapsed_secs,
+                refresh_attempts = telemetry_refresh_attempts,
+                credential_events = telemetry_credential_events,
+                providers_in_backoff,
+                "Daemon loop telemetry"
+            );
+            telemetry_start = Instant::now();
+            telemetry_ticks = 0;
+            telemetry_refresh_attempts = 0;
+            telemetry_credential_events = 0;
+        }
     }
 }
 
@@ -471,7 +563,7 @@ async fn run_pricing_refresh_loop(cost_store: Arc<RwLock<CostStore>>) {
     loop {
         let refresh_result = {
             let mut cost_store = cost_store.write().await;
-            cost_store.refresh_pricing(true).await
+            cost_store.refresh_pricing(false).await
         };
 
         match refresh_result {
@@ -500,6 +592,7 @@ async fn run_cost_scan_loop(
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(300));
 
+    interval.tick().await;
     scan_and_update_costs(&cost_store, &store, &ui_tx).await;
 
     loop {
@@ -513,11 +606,13 @@ async fn scan_and_update_costs(
     store: &Arc<UsageStore>,
     ui_tx: &mpsc::UnboundedSender<UiCommand>,
 ) {
+    let scan_start = Instant::now();
     let costs = {
         let mut cost_store = cost_store.write().await;
         cost_store.scan_all()
     };
 
+    let provider_count = costs.len();
     for (provider, result) in costs {
         store.update_cost(provider, result.cost.clone()).await;
         store
@@ -532,6 +627,13 @@ async fn scan_and_update_costs(
             tokens: Box::new(result.tokens),
         });
     }
+
+    tracing::info!(
+        component = "cost-scan-loop",
+        providers_scanned = provider_count,
+        duration_ms = scan_start.elapsed().as_millis() as u64,
+        "Daemon loop telemetry"
+    );
 }
 
 async fn refresh_provider_with_retry(
